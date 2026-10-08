@@ -35,10 +35,13 @@ import WebKit
     GeneratedPluginRegistrant.register(with: engineBridge.pluginRegistry)
     sharedFitIntakeBridge.configure(binaryMessenger: engineBridge.applicationRegistrar.messenger())
 
-    let controller = window?.rootViewController as! FlutterViewController
+    // Never reach for `window` here: after adopting UIScene the window is owned by the
+    // scene, so `AppDelegate.window` is nil and a forced cast would trap while the
+    // storyboard is still instantiating the view controller. The view controller's
+    // binary messenger is the engine's messenger anyway, so take it from the engine.
     let cookieChannel = FlutterMethodChannel(
       name: "onelap_strava_sync/cookie",
-      binaryMessenger: controller.binaryMessenger
+      binaryMessenger: engineBridge.applicationRegistrar.messenger()
     )
     cookieChannel.setMethodCallHandler { (call, result) in
       if call.method == "getCookies" {
