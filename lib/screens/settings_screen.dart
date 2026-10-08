@@ -1,8 +1,12 @@
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:file_picker/file_picker.dart';
+import 'package:flutter/foundation.dart'
+    show TargetPlatform, defaultTargetPlatform;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:path_provider/path_provider.dart';
 import 'package:share_plus/share_plus.dart' show Share, XFile;
 
 import '../services/config_service.dart';
@@ -33,8 +37,11 @@ class SettingsScreen extends StatefulWidget {
 }
 
 class _SettingsScreenState extends State<SettingsScreen> {
+  static const String _configFileName = 'onelap_config.json';
+
   late final SettingsService _settingsService;
   final _controllers = <String, TextEditingController>{};
+  final GlobalKey _exportButtonKey = GlobalKey();
   bool _loading = true;
   bool _savingOneLapCredentials = false;
   bool _gcjCorrectionEnabled = false;
@@ -532,6 +539,46 @@ class _SettingsScreenState extends State<SettingsScreen> {
     FocusScope.of(context).unfocus();
   }
 
+  /// iOS 走系统「存储到文件」对话框；Android 与桌面平台沿用系统分享面板
+  /// （Android 的分享面板不会触发 popover 锚点报错，无需改动）。
+  bool get _usesSystemSaveDialog => defaultTargetPlatform == TargetPlatform.iOS;
+
+  /// share_plus 在 iPad/macOS 上要求非零且在源视图内的 popover 锚点，
+  /// 否则原生侧直接抛 PlatformException。这里锚到「导出配置」按钮，
+  /// 裁剪到可见区域；裁剪后为空则退回屏幕中心。
+  Rect _sharePositionOrigin() {
+    final Size viewSize = MediaQuery.sizeOf(context);
+    final RenderObject? renderObject = _exportButtonKey.currentContext
+        ?.findRenderObject();
+    if (renderObject is RenderBox && renderObject.hasSize) {
+      final Rect anchor =
+          renderObject.localToGlobal(Offset.zero) & renderObject.size;
+      final Rect visible = anchor.intersect(Offset.zero & viewSize);
+      if (!visible.isEmpty) return visible;
+    }
+    return Rect.fromCenter(
+      center: viewSize.center(Offset.zero),
+      width: 1,
+      height: 1,
+    );
+  }
+
+  /// file_picker 在 iOS 上会先把文件写进沙盒 Documents 目录下的 [_configFileName] 再交给系统导出，
+  /// 该副本含明文账号密码，导出结束后删除（用户恰好存到同一路径时保留）。
+  Future<void> _removeIosExportCopy(String? savedPath) async {
+    if (defaultTargetPlatform != TargetPlatform.iOS) return;
+    try {
+      final Directory documents = await getApplicationDocumentsDirectory();
+      final File copy = File('${documents.path}/$_configFileName');
+      if (copy.path != savedPath) {
+        await copy.delete();
+      }
+    } catch (e) {
+      // 副本不存在或清理失败都不影响导出结果
+      debugPrint('清理导出临时副本失败: $e');
+    }
+  }
+
   Future<void> _exportConfig() async {
     final confirmed = await showDialog<bool>(
       context: context,
@@ -554,12 +601,34 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
     setState(() => _exporting = true);
     Directory? tempDir;
+    String? savedPath;
     try {
-      final json = await _configService.exportConfig();
+      final String json = await _configService.exportConfig();
+      if (_usesSystemSaveDialog) {
+        // bytes 由原生侧写入用户选定的位置（iOS/Android 上为必填参数）。
+        savedPath = await FilePicker.platform.saveFile(
+          fileName: _configFileName,
+          bytes: Uint8List.fromList(utf8.encode(json)),
+          type: FileType.custom,
+          allowedExtensions: const <String>['json'],
+        );
+        if (savedPath == null) return; // 用户取消
+        if (mounted) {
+          ScaffoldMessenger.of(
+            context,
+          ).showSnackBar(const SnackBar(content: Text('配置已保存')));
+        }
+        return;
+      }
+
       tempDir = await Directory.systemTemp.createTemp('config');
-      final file = File('${tempDir.path}/onelap_config.json');
+      final file = File('${tempDir.path}/$_configFileName');
       await file.writeAsString(json);
-      await Share.shareXFiles([XFile(file.path)], text: 'WanSync 配置文件');
+      await Share.shareXFiles(
+        [XFile(file.path)],
+        text: 'WanSync 配置文件',
+        sharePositionOrigin: _sharePositionOrigin(),
+      );
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(
@@ -569,6 +638,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     } finally {
       if (mounted) setState(() => _exporting = false);
       tempDir?.delete(recursive: true).ignore();
+      await _removeIosExportCopy(savedPath);
     }
   }
 
@@ -826,6 +896,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
             children: [
               Expanded(
                 child: ElevatedButton.icon(
+                  key: _exportButtonKey,
                   onPressed: _exporting ? null : _exportConfig,
                   icon: _exporting
                       ? const SizedBox(

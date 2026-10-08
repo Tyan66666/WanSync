@@ -1,10 +1,17 @@
 import 'dart:async';
+import 'dart:convert';
 
+import 'package:file_picker/file_picker.dart';
+import 'package:flutter/foundation.dart'
+    show TargetPlatform, debugDefaultTargetPlatformOverride;
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:onelap_strava_sync/models/app_config.dart';
 import 'package:onelap_strava_sync/screens/settings_screen.dart';
 import 'package:onelap_strava_sync/services/settings_service.dart';
+import 'package:package_info_plus/package_info_plus.dart';
 
 class InMemorySettingsStore implements SettingsStore {
   InMemorySettingsStore([Map<String, String>? initialValues])
@@ -898,4 +905,242 @@ void main() {
       expect(find.text('设置保存失败: Exception: save failed'), findsOneWidget);
     },
   );
+
+  group('导出配置', () {
+    late _RecordingFilePicker picker;
+    late List<MethodCall> shareCalls;
+    FilePicker? originalPicker;
+
+    const MethodChannel shareChannel = MethodChannel(
+      'dev.fluttercommunity.plus/share',
+    );
+
+    void usePlatform(TargetPlatform platform) {
+      // 框架的不变量校验（debugAssertAllFoundationVarsUnset）发生在 tearDown 之前，
+      // 必须在测试体内 try/finally 复位，参见 strava_web_login_test.dart。
+      debugDefaultTargetPlatformOverride = platform;
+    }
+
+    Future<void> pumpSettingsScreen(WidgetTester tester) async {
+      final SettingsService settingsService = SettingsService(
+        store: InMemorySettingsStore(<String, String>{
+          SettingsService.keyOneLapUsername: 'rider',
+          SettingsService.keyOneLapPassword: 'secret',
+          SettingsService.keyLookbackDays: '5',
+        }),
+      );
+
+      await tester.pumpWidget(
+        MaterialApp(home: SettingsScreen(settingsService: settingsService)),
+      );
+      await tester.pumpAndSettle();
+    }
+
+    Future<void> confirmExport(WidgetTester tester) async {
+      await tapVisibleText(tester, '导出配置');
+      expect(find.text('配置文件包含账号密码等敏感信息，请妥善保管。'), findsOneWidget);
+      await tester.tap(find.text('继续'));
+      await tester.pumpAndSettle();
+    }
+
+    setUp(() {
+      PackageInfo.setMockInitialValues(
+        appName: 'WanSync',
+        packageName: 'com.example.onelap_strava_sync',
+        version: '9.9.9',
+        buildNumber: '99',
+        buildSignature: '',
+      );
+
+      originalPicker = _currentFilePicker();
+      picker = _RecordingFilePicker();
+      FilePicker.platform = picker;
+
+      shareCalls = <MethodCall>[];
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(shareChannel, (MethodCall call) async {
+            shareCalls.add(call);
+            return 'success';
+          });
+    });
+
+    tearDown(() {
+      if (originalPicker != null) {
+        FilePicker.platform = originalPicker!;
+      }
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(shareChannel, null);
+    });
+
+    /// 非 iOS 分支会真实读写临时文件：fake async 下真实 I/O 的 Future 永不完成
+    /// （_exporting 卡住 → 无限动画），必须放在 runAsync 里驱动真实事件循环。
+    Future<void> exportViaShareSheet(WidgetTester tester) async {
+      await tester.runAsync(() async {
+        await tapVisibleText(tester, '导出配置');
+        expect(find.text('配置文件包含账号密码等敏感信息，请妥善保管。'), findsOneWidget);
+        await tester.tap(find.text('继续'));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 300));
+        for (int i = 0; i < 200 && shareCalls.isEmpty; i++) {
+          await Future<void>.delayed(const Duration(milliseconds: 10));
+        }
+        await tester.pump();
+      });
+      await tester.pumpAndSettle();
+    }
+
+    /// 分享面板必须收到合法 popover 锚点：非零且落在源视图坐标系内，
+    /// 否则 iPad/macOS 原生侧抛 PlatformException（本次线上报错的根因）。
+    void expectValidShareSheetCall() {
+      expect(picker.saveCalls, isEmpty);
+      expect(shareCalls, hasLength(1));
+      final MethodCall call = shareCalls.single;
+      expect(call.method, 'shareFiles');
+
+      final Map<Object?, Object?> args =
+          call.arguments as Map<Object?, Object?>;
+      expect(
+        (args['paths']! as List<Object?>).single as String,
+        endsWith('onelap_config.json'),
+      );
+
+      final double originX = args['originX']! as double;
+      final double originY = args['originY']! as double;
+      final double originWidth = args['originWidth']! as double;
+      final double originHeight = args['originHeight']! as double;
+      expect(originWidth, greaterThan(0));
+      expect(originHeight, greaterThan(0));
+      // 锚点必须落在源视图坐标系内，否则原生侧抛 PlatformException
+      expect(originX, greaterThanOrEqualTo(0));
+      expect(originY, greaterThanOrEqualTo(0));
+      expect(originX + originWidth, lessThanOrEqualTo(1080));
+      expect(originY + originHeight, lessThanOrEqualTo(2400));
+    }
+
+    testWidgets('iOS 走系统保存对话框而不是分享面板', (WidgetTester tester) async {
+      useLargeTestViewport(tester);
+      usePlatform(TargetPlatform.iOS);
+      try {
+        await pumpSettingsScreen(tester);
+
+        await confirmExport(tester);
+
+        expect(picker.saveCalls, hasLength(1));
+        final _SaveFileRequest request = picker.saveCalls.single;
+        expect(request.fileName, 'onelap_config.json');
+        expect(request.type, FileType.custom);
+        expect(request.allowedExtensions, <String>['json']);
+
+        final Uint8List bytes = request.bytes!;
+        final Map<String, dynamic> decoded =
+            jsonDecode(utf8.decode(bytes)) as Map<String, dynamic>;
+        expect(decoded['version'], AppConfig.currentVersion);
+        expect(decoded['appVersion'], '9.9.9');
+        expect(
+          decoded['settings'] as Map<String, dynamic>,
+          containsPair('onelap', containsPair('username', 'rider')),
+        );
+
+        // 不再走分享面板：iPad/macOS 缺少 popover 锚点会直接报 PlatformException
+        expect(shareCalls, isEmpty);
+        expect(find.text('配置已保存'), findsOneWidget);
+      } finally {
+        debugDefaultTargetPlatformOverride = null;
+      }
+    });
+
+    testWidgets('Android 保持分享面板（行为不变）', (WidgetTester tester) async {
+      useLargeTestViewport(tester);
+      usePlatform(TargetPlatform.android);
+      try {
+        await pumpSettingsScreen(tester);
+
+        await exportViaShareSheet(tester);
+
+        expectValidShareSheetCall();
+      } finally {
+        debugDefaultTargetPlatformOverride = null;
+      }
+    });
+
+    testWidgets('系统对话框取消时不报错也不提示已保存', (WidgetTester tester) async {
+      useLargeTestViewport(tester);
+      usePlatform(TargetPlatform.iOS);
+      try {
+        await pumpSettingsScreen(tester);
+        picker.resultPath = null;
+
+        await confirmExport(tester);
+
+        expect(picker.saveCalls, hasLength(1));
+        expect(find.text('配置已保存'), findsNothing);
+        expect(find.textContaining('导出失败'), findsNothing);
+      } finally {
+        debugDefaultTargetPlatformOverride = null;
+      }
+    });
+
+    testWidgets('桌面平台保留分享面板且携带非空 popover 锚点', (WidgetTester tester) async {
+      useLargeTestViewport(tester);
+      usePlatform(TargetPlatform.macOS);
+      try {
+        await pumpSettingsScreen(tester);
+
+        await exportViaShareSheet(tester);
+
+        expectValidShareSheetCall();
+      } finally {
+        debugDefaultTargetPlatformOverride = null;
+      }
+    });
+  });
+}
+
+class _SaveFileRequest {
+  const _SaveFileRequest({
+    required this.fileName,
+    required this.type,
+    required this.allowedExtensions,
+    required this.bytes,
+  });
+
+  final String? fileName;
+  final FileType type;
+  final List<String>? allowedExtensions;
+  final Uint8List? bytes;
+}
+
+class _RecordingFilePicker extends FilePicker {
+  final List<_SaveFileRequest> saveCalls = <_SaveFileRequest>[];
+  String? resultPath = '/tmp/onelap_config.json';
+
+  @override
+  Future<String?> saveFile({
+    String? dialogTitle,
+    String? fileName,
+    String? initialDirectory,
+    FileType type = FileType.any,
+    List<String>? allowedExtensions,
+    Uint8List? bytes,
+    bool lockParentWindow = false,
+  }) async {
+    saveCalls.add(
+      _SaveFileRequest(
+        fileName: fileName,
+        type: type,
+        allowedExtensions: allowedExtensions,
+        bytes: bytes,
+      ),
+    );
+    return resultPath;
+  }
+}
+
+/// [FilePicker.platform] 默认值是 `late`，测试环境下未被插件注册时会抛异常。
+FilePicker? _currentFilePicker() {
+  try {
+    return FilePicker.platform;
+  } catch (_) {
+    return null;
+  }
 }
