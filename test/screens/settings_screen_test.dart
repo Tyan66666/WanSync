@@ -972,6 +972,51 @@ void main() {
           .setMockMethodCallHandler(shareChannel, null);
     });
 
+    /// 非 iOS 分支会真实读写临时文件：fake async 下真实 I/O 的 Future 永不完成
+    /// （_exporting 卡住 → 无限动画），必须放在 runAsync 里驱动真实事件循环。
+    Future<void> exportViaShareSheet(WidgetTester tester) async {
+      await tester.runAsync(() async {
+        await tapVisibleText(tester, '导出配置');
+        expect(find.text('配置文件包含账号密码等敏感信息，请妥善保管。'), findsOneWidget);
+        await tester.tap(find.text('继续'));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 300));
+        for (int i = 0; i < 200 && shareCalls.isEmpty; i++) {
+          await Future<void>.delayed(const Duration(milliseconds: 10));
+        }
+        await tester.pump();
+      });
+      await tester.pumpAndSettle();
+    }
+
+    /// 分享面板必须收到合法 popover 锚点：非零且落在源视图坐标系内，
+    /// 否则 iPad/macOS 原生侧抛 PlatformException（本次线上报错的根因）。
+    void expectValidShareSheetCall() {
+      expect(picker.saveCalls, isEmpty);
+      expect(shareCalls, hasLength(1));
+      final MethodCall call = shareCalls.single;
+      expect(call.method, 'shareFiles');
+
+      final Map<Object?, Object?> args =
+          call.arguments as Map<Object?, Object?>;
+      expect(
+        (args['paths']! as List<Object?>).single as String,
+        endsWith('onelap_config.json'),
+      );
+
+      final double originX = args['originX']! as double;
+      final double originY = args['originY']! as double;
+      final double originWidth = args['originWidth']! as double;
+      final double originHeight = args['originHeight']! as double;
+      expect(originWidth, greaterThan(0));
+      expect(originHeight, greaterThan(0));
+      // 锚点必须落在源视图坐标系内，否则原生侧抛 PlatformException
+      expect(originX, greaterThanOrEqualTo(0));
+      expect(originY, greaterThanOrEqualTo(0));
+      expect(originX + originWidth, lessThanOrEqualTo(1080));
+      expect(originY + originHeight, lessThanOrEqualTo(2400));
+    }
+
     testWidgets('iOS 走系统保存对话框而不是分享面板', (WidgetTester tester) async {
       useLargeTestViewport(tester);
       usePlatform(TargetPlatform.iOS);
@@ -1004,18 +1049,15 @@ void main() {
       }
     });
 
-    testWidgets('Android 也走系统保存对话框', (WidgetTester tester) async {
+    testWidgets('Android 保持分享面板（行为不变）', (WidgetTester tester) async {
       useLargeTestViewport(tester);
       usePlatform(TargetPlatform.android);
       try {
         await pumpSettingsScreen(tester);
 
-        await confirmExport(tester);
+        await exportViaShareSheet(tester);
 
-        expect(picker.saveCalls, hasLength(1));
-        expect(picker.saveCalls.single.bytes, isNotNull);
-        expect(shareCalls, isEmpty);
-        expect(find.text('配置已保存'), findsOneWidget);
+        expectValidShareSheetCall();
       } finally {
         debugDefaultTargetPlatformOverride = null;
       }
@@ -1044,44 +1086,9 @@ void main() {
       try {
         await pumpSettingsScreen(tester);
 
-        // 桌面分支会真实读写临时文件：fake async 下真实 I/O 的 Future 永不完成
-        // （_exporting 卡住 → 无限动画），必须放在 runAsync 里驱动真实事件循环。
-        await tester.runAsync(() async {
-          await tapVisibleText(tester, '导出配置');
-          expect(find.text('配置文件包含账号密码等敏感信息，请妥善保管。'), findsOneWidget);
-          await tester.tap(find.text('继续'));
-          await tester.pump();
-          await tester.pump(const Duration(milliseconds: 300));
-          for (int i = 0; i < 200 && shareCalls.isEmpty; i++) {
-            await Future<void>.delayed(const Duration(milliseconds: 10));
-          }
-          await tester.pump();
-        });
-        await tester.pumpAndSettle();
+        await exportViaShareSheet(tester);
 
-        expect(picker.saveCalls, isEmpty);
-        expect(shareCalls, hasLength(1));
-        final MethodCall call = shareCalls.single;
-        expect(call.method, 'shareFiles');
-
-        final Map<Object?, Object?> args =
-            call.arguments as Map<Object?, Object?>;
-        expect(
-          (args['paths']! as List<Object?>).single as String,
-          endsWith('onelap_config.json'),
-        );
-
-        final double originX = args['originX']! as double;
-        final double originY = args['originY']! as double;
-        final double originWidth = args['originWidth']! as double;
-        final double originHeight = args['originHeight']! as double;
-        expect(originWidth, greaterThan(0));
-        expect(originHeight, greaterThan(0));
-        // 锚点必须落在源视图坐标系内，否则原生侧抛 PlatformException
-        expect(originX, greaterThanOrEqualTo(0));
-        expect(originY, greaterThanOrEqualTo(0));
-        expect(originX + originWidth, lessThanOrEqualTo(1080));
-        expect(originY + originHeight, lessThanOrEqualTo(2400));
+        expectValidShareSheetCall();
       } finally {
         debugDefaultTargetPlatformOverride = null;
       }

@@ -539,11 +539,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
     FocusScope.of(context).unfocus();
   }
 
-  /// iOS/Android 走系统「保存到文件」对话框（iOS: 存储到「文件」；
-  /// Android: ACTION_CREATE_DOCUMENT），其余平台沿用系统分享面板。
-  bool get _usesSystemSaveDialog =>
-      defaultTargetPlatform == TargetPlatform.iOS ||
-      defaultTargetPlatform == TargetPlatform.android;
+  /// iOS 走系统「存储到文件」对话框；Android 与桌面平台沿用系统分享面板
+  /// （Android 的分享面板不会触发 popover 锚点报错，无需改动）。
+  bool get _usesSystemSaveDialog => defaultTargetPlatform == TargetPlatform.iOS;
 
   /// share_plus 在 iPad/macOS 上要求非零且在源视图内的 popover 锚点，
   /// 否则原生侧直接抛 PlatformException。这里锚到「导出配置」按钮，
