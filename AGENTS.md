@@ -107,10 +107,10 @@ Follow existing repository patterns first. Standard Dart/Flutter conventions app
 
 ## Release
 
-To create a new release, check the latest version on [GitHub Releases](https://github.com/Anomaly-Lap/Onelap-Strava-GoGoGo/releases), increment the patch version by 1, then run the tag command. For example, if the latest release is `v1.0.17`, run:
+To create a new release, check the latest version on [GitHub Releases](https://github.com/Tyan66666/WanSync/releases), increment the patch version by 1, then run the tag command. For example, if the latest release is `v1.0.26`, run:
 
 ```bash
-git tag v1.0.18 && git push origin v1.0.18
+git tag v1.0.27 && git push origin v1.0.27
 ```
 
 ## Instruction Files Checked
