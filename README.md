@@ -115,9 +115,9 @@ Strava 上传支持 API 和网页两种模式：API 模式需要配置 Client ID
 
 ### 活动一直显示「已跳过」/ Activity Keeps Showing as Skipped
 
-顽爪爪会在本地记录每个平台的「已同步」状态（按活动指纹 + 起始时间/距离判重）。只要某个平台已有成功记录，该平台就会显示「已跳过」，即使你后来打开了坐标纠偏也不会自动重传。如果确认线上确实没有这条活动，可以在设置 →「同步状态」点击「重置同步状态（清空已同步记录）」：这会清空所有平台的已同步记录，下次同步会重新上传全部活动（同步历史不会删除）。
+顽爪爪会在本地记录每个平台的「已同步」状态（按活动指纹 + 起始时间/距离判重）。只要某个平台已有成功记录，该平台就会显示「已跳过」，即使你后来打开了坐标纠偏也不会自动重传。如果确认线上确实没有这条活动，可以在设置 →「同步状态」点击「重置同步状态」：这会清空所有平台的已同步记录，下次同步会重新上传全部活动（同步历史不会删除）。
 
-*WanSync stores a per-platform "already synced" marker locally (dedupe by activity fingerprint and start-time/distance). Once a platform has a success record it is skipped, even if coordinate correction was enabled later. If the activity is genuinely missing remotely, go to Settings → "同步状态" and tap "重置同步状态（清空已同步记录）" to clear the synced state for all platforms; the next sync re-uploads everything (sync history is kept).*
+*WanSync stores a per-platform "already synced" marker locally (dedupe by activity fingerprint and start-time/distance). Once a platform has a success record it is skipped, even if coordinate correction was enabled later. If the activity is genuinely missing remotely, go to Settings → "同步状态" and tap "重置同步状态" to clear the synced state for all platforms; the next sync re-uploads everything (sync history is kept).*
 
 ### 顽鹿下载失败时的备用方式 / Fallback When OneLap Download Fails
 

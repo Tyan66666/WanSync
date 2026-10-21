@@ -1215,10 +1215,7 @@ void main() {
     );
     await tester.pumpAndSettle();
 
-    final Finder resetButton = find.widgetWithText(
-      OutlinedButton,
-      '重置同步状态（清空已同步记录）',
-    );
+    final Finder resetButton = find.widgetWithText(OutlinedButton, '重置同步状态');
     await tester.ensureVisible(resetButton);
     await tester.tap(resetButton);
     await tester.pumpAndSettle();
@@ -1244,10 +1241,7 @@ void main() {
     );
     await tester.pumpAndSettle();
 
-    final Finder resetButton = find.widgetWithText(
-      OutlinedButton,
-      '重置同步状态（清空已同步记录）',
-    );
+    final Finder resetButton = find.widgetWithText(OutlinedButton, '重置同步状态');
     await tester.ensureVisible(resetButton);
     await tester.tap(resetButton);
     await tester.pumpAndSettle();

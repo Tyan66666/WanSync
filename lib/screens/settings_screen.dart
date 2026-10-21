@@ -1013,7 +1013,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     child: CircularProgressIndicator(strokeWidth: 2),
                   )
                 : const Icon(Icons.restart_alt),
-            label: const Text('重置同步状态（清空已同步记录）'),
+            label: const Text('重置同步状态'),
           ),
           const SizedBox(height: 16),
           const Text(
