@@ -1167,7 +1167,9 @@ class _HomeScreenState extends State<HomeScreen> {
             icon: const Icon(Icons.settings),
             onPressed: () => Navigator.push(
               context,
-              MaterialPageRoute(builder: (_) => const SettingsScreen()),
+              MaterialPageRoute(
+                builder: (_) => SettingsScreen(stateStore: _stateStore),
+              ),
             ),
           ),
         ],

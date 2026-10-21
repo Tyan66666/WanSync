@@ -11,6 +11,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:onelap_strava_sync/models/app_config.dart';
 import 'package:onelap_strava_sync/screens/settings_screen.dart';
 import 'package:onelap_strava_sync/services/settings_service.dart';
+import 'package:onelap_strava_sync/services/state_store.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 
 class InMemorySettingsStore implements SettingsStore {
@@ -80,6 +81,15 @@ class ControlledWriteSettingsStore extends InMemorySettingsStore {
     return completer.future.then((_) {
       _values[key] = value;
     });
+  }
+}
+
+class RecordingStateStore extends StateStore {
+  int resetCalls = 0;
+
+  @override
+  Future<void> resetSyncState() async {
+    resetCalls++;
   }
 }
 
@@ -1191,6 +1201,56 @@ void main() {
         debugDefaultTargetPlatformOverride = null;
       }
     });
+  });
+
+  testWidgets('resets sync state for all platforms after confirmation', (
+    WidgetTester tester,
+  ) async {
+    useLargeTestViewport(tester);
+
+    final RecordingStateStore stateStore = RecordingStateStore();
+
+    await tester.pumpWidget(
+      MaterialApp(home: SettingsScreen(stateStore: stateStore)),
+    );
+    await tester.pumpAndSettle();
+
+    final Finder resetButton = find.widgetWithText(OutlinedButton, '重置同步状态');
+    await tester.ensureVisible(resetButton);
+    await tester.tap(resetButton);
+    await tester.pumpAndSettle();
+
+    expect(find.text('重置同步状态？'), findsOneWidget);
+
+    await tester.tap(find.widgetWithText(TextButton, '重置'));
+    await tester.pumpAndSettle();
+
+    expect(stateStore.resetCalls, 1);
+    expect(find.text('同步状态已重置，下次同步将重新上传'), findsOneWidget);
+  });
+
+  testWidgets('canceling the sync state reset leaves state untouched', (
+    WidgetTester tester,
+  ) async {
+    useLargeTestViewport(tester);
+
+    final RecordingStateStore stateStore = RecordingStateStore();
+
+    await tester.pumpWidget(
+      MaterialApp(home: SettingsScreen(stateStore: stateStore)),
+    );
+    await tester.pumpAndSettle();
+
+    final Finder resetButton = find.widgetWithText(OutlinedButton, '重置同步状态');
+    await tester.ensureVisible(resetButton);
+    await tester.tap(resetButton);
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.widgetWithText(TextButton, '取消'));
+    await tester.pumpAndSettle();
+
+    expect(stateStore.resetCalls, 0);
+    expect(find.text('同步状态已重置，下次同步将重新上传'), findsNothing);
   });
 }
 

@@ -995,7 +995,7 @@ void main() {
       expect(dedupRecord.uploadedToXingzhe, isFalse);
     });
 
-    test('dedupeKey includes timeSeconds when available', () async {
+    test('dedupeKey normalizes start time and ignores API duration', () async {
       final tempDir = await Directory.systemTemp.createTemp(
         'sync-engine-dedupe-key-',
       );
@@ -1032,8 +1032,7 @@ void main() {
 
       await engine.runOnce();
 
-      expect(capturedDedupeKey, isNotNull);
-      expect(capturedDedupeKey, contains('_3600'));
+      expect(capturedDedupeKey, '2026-04-10T08:00:00Z_na');
     });
 
     test('cleans up download directory after sync', () async {

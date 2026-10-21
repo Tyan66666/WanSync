@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/services.dart';
@@ -192,5 +193,84 @@ void main() {
         );
       },
     );
+  });
+  group('StateStore dedupe state', () {
+    test(
+      'resetSyncState clears synced and dedupe keys but keeps history',
+      () async {
+        final StateStore store = StateStore();
+        await store.markPlatformSynced('fp-reset', 'strava', 42);
+        await store.markDedupeKey('2026-10-18T12:33:08Z_42195', 'fp-reset');
+        await store.saveSyncRecords(<SyncRecord>[
+          _successfulRecord(
+            fingerprint: 'fp-reset',
+            sourceFilename: 'reset.fit',
+            startTime: '2026-10-18T12:33:08Z',
+            syncedAt: DateTime.parse('2026-10-18T13:00:00Z'),
+          ),
+        ]);
+
+        expect(await store.isAlreadyUploaded('fp-reset', 'strava'), isTrue);
+        expect(await store.isDedupeKey('2026-10-18T12:33:08Z_42195'), isTrue);
+
+        await store.resetSyncState();
+
+        expect(await store.isAlreadyUploaded('fp-reset', 'strava'), isFalse);
+        expect(await store.isDedupeKey('2026-10-18T12:33:08Z_42195'), isFalse);
+        expect(await store.loadSyncRecords(limit: 10), hasLength(1));
+      },
+    );
+
+    test('reads legacy intervalsIcu markers from an old state file', () async {
+      final File stateFile = File('${documentsDirectory.path}/state.json');
+      await stateFile.writeAsString(
+        jsonEncode(<String, dynamic>{
+          'synced': <String, dynamic>{
+            'fp-legacy': <String, dynamic>{
+              'platforms': <String, dynamic>{'intervalsIcu': 'success'},
+              'synced_at': '2026-10-18T13:00:00.000Z',
+            },
+          },
+          'history': <Map<String, dynamic>>[],
+          'dedupeKeys': <String, dynamic>{
+            '2026-10-18T12:33:08Z_42195_3600': <String, dynamic>{
+              'fingerprint': 'fp-legacy',
+              'synced_at': '2026-10-18T13:00:00.000Z',
+              'platforms': <String, dynamic>{'intervalsIcu': 'success'},
+            },
+          },
+        }),
+      );
+
+      final StateStore store = StateStore();
+
+      expect(
+        await store.isAlreadyUploaded('fp-legacy', 'intervals_icu'),
+        isTrue,
+      );
+      expect(await store.isDedupeKey('2026-10-18T12:33:08Z_42195'), isTrue);
+      expect(
+        await store.getDedupeKeyFingerprint('2026-10-18T12:33:08Z_42195'),
+        'fp-legacy',
+      );
+      // OneLap-style local start time must match the FIT UTC canonical key.
+      expect(await store.isDedupeKey('2026-10-18T20:33:08_42195'), isTrue);
+    });
+
+    test('clearPlatformStatus removes legacy intervals aliases', () async {
+      final StateStore store = StateStore();
+      await store.markPlatformSynced('fp-clear', 'intervalsIcu', null);
+      expect(
+        await store.isAlreadyUploaded('fp-clear', 'intervals_icu'),
+        isTrue,
+      );
+
+      await store.clearPlatformStatus('fp-clear', 'intervals_icu');
+
+      expect(
+        await store.isAlreadyUploaded('fp-clear', 'intervals_icu'),
+        isFalse,
+      );
+    });
   });
 }

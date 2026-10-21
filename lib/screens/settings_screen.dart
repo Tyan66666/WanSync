@@ -13,6 +13,7 @@ import '../services/config_service.dart';
 import '../services/gcj_correction_settings.dart';
 import '../services/onelap_client.dart';
 import '../services/settings_service.dart';
+import '../services/state_store.dart';
 import 'intervals_icu_settings_screen.dart';
 import 'outbase_settings_screen.dart';
 import 'strava_settings_screen.dart';
@@ -25,11 +26,13 @@ class SettingsScreen extends StatefulWidget {
   const SettingsScreen({
     super.key,
     this.settingsService,
+    this.stateStore,
     this.authorizeStrava,
     this.validateOneLapLogin,
   });
 
   final SettingsService? settingsService;
+  final StateStore? stateStore;
   final AuthorizeStravaCallback? authorizeStrava;
   final ValidateOneLapLoginCallback? validateOneLapLogin;
 
@@ -41,6 +44,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   static const String _configFileName = 'onelap_config.json';
 
   late final SettingsService _settingsService;
+  late final StateStore _stateStore;
   final _controllers = <String, TextEditingController>{};
   final GlobalKey _exportButtonKey = GlobalKey();
   bool _loading = true;
@@ -77,6 +81,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   late final ConfigService _configService;
   bool _exporting = false;
   bool _importing = false;
+  bool _resettingSyncState = false;
 
   static const _controllerKeys = [
     SettingsService.keyOneLapUsername,
@@ -103,6 +108,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   void initState() {
     super.initState();
     _settingsService = widget.settingsService ?? SettingsService();
+    _stateStore = widget.stateStore ?? StateStore();
     _configService = ConfigService(settingsService: _settingsService);
     for (final key in _controllerKeys) {
       _controllers[key] = TextEditingController();
@@ -765,6 +771,47 @@ class _SettingsScreenState extends State<SettingsScreen> {
     super.dispose();
   }
 
+  Future<void> _resetSyncState() async {
+    final bool? confirmed = await showDialog<bool>(
+      context: context,
+      builder: (BuildContext dialogContext) => AlertDialog(
+        title: const Text('重置同步状态？'),
+        content: const Text('将清空所有平台的已同步记录，下次同步会重新上传全部活动。同步历史不会被删除。'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(false),
+            child: const Text('取消'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(true),
+            child: const Text('重置'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) {
+      return;
+    }
+
+    setState(() => _resettingSyncState = true);
+    try {
+      await _stateStore.resetSyncState();
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('同步状态已重置，下次同步将重新上传')));
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('重置失败: $e')));
+    } finally {
+      if (mounted) {
+        setState(() => _resettingSyncState = false);
+      }
+    }
+  }
+
   Widget _buildPlatformCard({
     required String title,
     required bool value,
@@ -945,6 +992,28 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 ),
               );
             },
+          ),
+          const SizedBox(height: 16),
+          const Text(
+            '同步状态',
+            style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+          ),
+          const SizedBox(height: 8),
+          Text(
+            '重置后清空四个平台的“已同步”记录（含兜底判重键），下次同步会重新上传全部活动；同步历史不会被删除。',
+            style: Theme.of(context).textTheme.bodySmall,
+          ),
+          const SizedBox(height: 8),
+          OutlinedButton.icon(
+            onPressed: _resettingSyncState ? null : _resetSyncState,
+            icon: _resettingSyncState
+                ? const SizedBox(
+                    width: 16,
+                    height: 16,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
+                : const Icon(Icons.restart_alt),
+            label: const Text('重置同步状态'),
           ),
           const SizedBox(height: 16),
           const Text(
