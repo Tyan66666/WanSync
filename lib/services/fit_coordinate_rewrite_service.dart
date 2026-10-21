@@ -72,22 +72,41 @@ class FitCoordinateRewriteService {
     return outputFile;
   }
 
-  /// Builds a filename from startTime like '2024-01-15.fit', falling back to
-  /// the source filename extension or plain 'rewritten.fit'.
+  /// Builds the output filename, preferring the source filename so upload
+  /// targets that display the filename keep their original activity name.
+  /// Falls back to startTime like '2024-01-15.fit', then 'rewritten.fit'.
   String _deriveOutputFilename({String? startTime, String? sourceFilename}) {
+    final String? safeSourceName = _sanitizeFitFilename(sourceFilename);
+    if (safeSourceName != null) {
+      return safeSourceName;
+    }
     if (startTime != null && startTime.length >= 10) {
       final datePart = startTime.substring(0, 10); // 'YYYY-MM-DD'
       return '$datePart.fit';
     }
-    if (sourceFilename != null) {
-      final trimmed = sourceFilename.trim();
-      if (trimmed.isNotEmpty) {
-        final hasFitExt = trimmed.toLowerCase().endsWith('.fit');
-        if (hasFitExt) return trimmed;
-        return '$trimmed.fit';
-      }
-    }
     return 'rewritten.fit';
+  }
+
+  /// Returns a bare `*.fit` filename derived from [value], or null when it has
+  /// no usable name. Path separators and filesystem-reserved characters are
+  /// replaced so the name is always safe inside the temp directory.
+  static String? _sanitizeFitFilename(String? value) {
+    final String trimmed = (value ?? '').trim();
+    if (trimmed.isEmpty) {
+      return null;
+    }
+
+    final String bareName = trimmed.split('/').last.split('\\').last;
+    final String baseName = bareName.toLowerCase().endsWith('.fit')
+        ? bareName.substring(0, bareName.length - 4)
+        : bareName;
+    final String sanitized = baseName
+        .replaceAll(RegExp(r'[<>:"/\\|?*]+'), '_')
+        .trim();
+    if (sanitized.isEmpty) {
+      return null;
+    }
+    return '$sanitized.fit';
   }
 
   Future<File> _createOutputFile(

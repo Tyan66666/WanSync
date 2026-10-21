@@ -276,6 +276,70 @@ void main() {
       expect(outputFile.path, isNot(inputFile.path));
     });
 
+    test('names the rewritten file after the source filename', () async {
+      final Directory tempDir = await Directory.systemTemp.createTemp(
+        'fit-coordinate-rewrite-filename-',
+      );
+      final File inputFile = File('${tempDir.path}/input.fit');
+      await inputFile.writeAsBytes(
+        _buildFitBytes(<Message>[
+          _recordMessage(latitude: 39.915, longitude: 116.404),
+        ]),
+      );
+
+      addTearDown(() async {
+        if (await tempDir.exists()) {
+          await tempDir.delete(recursive: true);
+        }
+      });
+
+      final FitCoordinateRewriteService service = FitCoordinateRewriteService(
+        loadCacheDirectory: () async => tempDir,
+      );
+
+      final File outputFile = await service.rewrite(
+        inputFile,
+        options: const RewriteOptions(
+          startTime: '2026-04-15T06:07:08Z',
+          sourceFilename: 'morning ride.fit',
+        ),
+      );
+
+      expect(outputFile.uri.pathSegments.last, 'morning ride.fit');
+    });
+
+    test(
+      'falls back to the start date when no source filename is given',
+      () async {
+        final Directory tempDir = await Directory.systemTemp.createTemp(
+          'fit-coordinate-rewrite-filename-date-',
+        );
+        final File inputFile = File('${tempDir.path}/input.fit');
+        await inputFile.writeAsBytes(
+          _buildFitBytes(<Message>[
+            _recordMessage(latitude: 39.915, longitude: 116.404),
+          ]),
+        );
+
+        addTearDown(() async {
+          if (await tempDir.exists()) {
+            await tempDir.delete(recursive: true);
+          }
+        });
+
+        final FitCoordinateRewriteService service = FitCoordinateRewriteService(
+          loadCacheDirectory: () async => tempDir,
+        );
+
+        final File outputFile = await service.rewrite(
+          inputFile,
+          options: const RewriteOptions(startTime: '2026-04-15T06:07:08Z'),
+        );
+
+        expect(outputFile.uri.pathSegments.last, '2026-04-15.fit');
+      },
+    );
+
     test(
       'creates a unique .fit output path in the application cache directory',
       () async {

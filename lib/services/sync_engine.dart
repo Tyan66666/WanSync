@@ -8,6 +8,7 @@ import '../models/sync_record.dart';
 import 'concurrency_pool.dart';
 import 'dedupe_service.dart';
 import 'fit_coordinate_rewrite_service.dart';
+import 'gcj_correction_settings.dart';
 import 'intervals_icu_client.dart';
 import 'onelap_client.dart';
 import 'outbase_client.dart';
@@ -56,7 +57,7 @@ class SyncEngine {
   final IntervalsIcuClient? intervalsIcuClient;
   final OutbaseClient? outbaseClient;
   final StateStore stateStore;
-  final bool gcjCorrectionEnabled;
+  final GcjCorrectionSettings gcjCorrection;
   final FitCoordinateRewriteService? rewriteService;
   final bool uploadToStrava;
   final bool uploadToXingzhe;
@@ -71,7 +72,7 @@ class SyncEngine {
     this.intervalsIcuClient,
     this.outbaseClient,
     required this.stateStore,
-    this.gcjCorrectionEnabled = false,
+    this.gcjCorrection = const GcjCorrectionSettings(),
     this.rewriteService,
     this.uploadToStrava = true,
     this.uploadToXingzhe = false,
@@ -469,8 +470,32 @@ class SyncEngine {
       }
 
       // ---- 5. 上传文件准备 ----
-      // 坐标转换只在 Strava 上传内部执行；其他平台始终使用原始文件。
+      // 坐标转换按平台独立开关；需要纠偏的平台共用同一份改写后的文件。
       final File uploadFile = fitFile;
+      final bool needsCorrection =
+          (uploadToStrava && stravaClient != null && gcjCorrection.strava) ||
+          (uploadToXingzhe && xingzheClient != null && gcjCorrection.xingzhe) ||
+          (uploadToIntervalsIcu &&
+              intervalsIcuClient != null &&
+              gcjCorrection.intervalsIcu) ||
+          (uploadToOutbase && outbaseClient != null && gcjCorrection.outbase);
+      File? correctedFile;
+      String? correctionError;
+      if (needsCorrection) {
+        try {
+          final FitCoordinateRewriteService svc =
+              rewriteService ?? FitCoordinateRewriteService();
+          correctedFile = await svc.rewrite(
+            uploadFile,
+            options: RewriteOptions(
+              startTime: item.startTime,
+              sourceFilename: item.sourceFilename,
+            ),
+          );
+        } catch (e) {
+          correctionError = '坐标转换失败: $e';
+        }
+      }
 
       final List<PlatformSyncResult> platformResults = [];
       int platformsUploaded = 0;
@@ -480,73 +505,85 @@ class SyncEngine {
       progress = progress.copyWith(uploadTotal: progress.uploadTotal + 1);
       onProgress?.call(progress);
 
-      // ---- upload to Strava + Xingzhe in parallel ----
+      // ---- upload to all enabled platforms in parallel ----
       final List<_PlatformUploadResult> stravaResults = [];
       final List<_PlatformUploadResult> xingzheResults = [];
+      final List<_PlatformUploadResult> intervalsIcuResults = [];
+      final List<_PlatformUploadResult> outbaseResults = [];
 
       final List<Future<void>> uploadFutures = [];
 
-      if (uploadToStrava && stravaClient != null) {
-        uploadFutures.add(
-          _uploadToStrava(
-            fingerprint: currentFingerprint,
-            sourceFilename: item.sourceFilename,
-            startTime: item.startTime,
-            sessionMeta: sessionMeta,
-            uploadFile: uploadFile,
-            now: now,
-          ).then((r) => stravaResults.add(r)),
-        );
+      try {
+        if (uploadToStrava && stravaClient != null) {
+          uploadFutures.add(
+            _uploadToStrava(
+              fingerprint: currentFingerprint,
+              sourceFilename: item.sourceFilename,
+              startTime: item.startTime,
+              sessionMeta: sessionMeta,
+              uploadFile: uploadFile,
+              correctedFile: gcjCorrection.strava ? correctedFile : null,
+              correctionError: gcjCorrection.strava ? correctionError : null,
+              now: now,
+            ).then((r) => stravaResults.add(r)),
+          );
+        }
+
+        if (uploadToXingzhe && xingzheClient != null) {
+          uploadFutures.add(
+            _uploadToXingzhe(
+              fingerprint: currentFingerprint,
+              sourceFilename: item.sourceFilename,
+              startTime: item.startTime,
+              sessionMeta: sessionMeta,
+              uploadFile: uploadFile,
+              correctedFile: gcjCorrection.xingzhe ? correctedFile : null,
+              correctionError: gcjCorrection.xingzhe ? correctionError : null,
+              now: now,
+            ).then((r) => xingzheResults.add(r)),
+          );
+        }
+
+        if (uploadToIntervalsIcu && intervalsIcuClient != null) {
+          uploadFutures.add(
+            _uploadToIntervalsIcu(
+              fingerprint: currentFingerprint,
+              sourceFilename: item.sourceFilename,
+              startTime: item.startTime,
+              sessionMeta: sessionMeta,
+              uploadFile: uploadFile,
+              correctedFile: gcjCorrection.intervalsIcu ? correctedFile : null,
+              correctionError: gcjCorrection.intervalsIcu
+                  ? correctionError
+                  : null,
+              now: now,
+            ).then((r) => intervalsIcuResults.add(r)),
+          );
+        }
+
+        if (uploadToOutbase && outbaseClient != null) {
+          uploadFutures.add(
+            _uploadToOutbase(
+              fingerprint: currentFingerprint,
+              sourceFilename: item.sourceFilename,
+              startTime: item.startTime,
+              sessionMeta: sessionMeta,
+              uploadFile: uploadFile,
+              correctedFile: gcjCorrection.outbase ? correctedFile : null,
+              correctionError: gcjCorrection.outbase ? correctionError : null,
+              now: now,
+            ).then((r) => outbaseResults.add(r)),
+          );
+        }
+
+        // Run all platform uploads in parallel.
+        // Each helper catches all exceptions internally, so Future.wait
+        // never sees a rejected future — this is critical: if one helper
+        // let an exception escape, Future.wait would cancel the other.
+        await Future.wait(uploadFutures);
+      } finally {
+        await _deleteRewrittenFile(correctedFile, uploadFile);
       }
-
-      if (uploadToXingzhe && xingzheClient != null) {
-        uploadFutures.add(
-          _uploadToXingzhe(
-            fingerprint: currentFingerprint,
-            sourceFilename: item.sourceFilename,
-            startTime: item.startTime,
-            sessionMeta: sessionMeta,
-            uploadFile: uploadFile,
-            now: now,
-          ).then((r) => xingzheResults.add(r)),
-        );
-      }
-
-      final List<_PlatformUploadResult> intervalsIcuResults = [];
-
-      if (uploadToIntervalsIcu && intervalsIcuClient != null) {
-        uploadFutures.add(
-          _uploadToIntervalsIcu(
-            fingerprint: currentFingerprint,
-            sourceFilename: item.sourceFilename,
-            startTime: item.startTime,
-            sessionMeta: sessionMeta,
-            uploadFile: uploadFile,
-            now: now,
-          ).then((r) => intervalsIcuResults.add(r)),
-        );
-      }
-
-      final List<_PlatformUploadResult> outbaseResults = [];
-
-      if (uploadToOutbase && outbaseClient != null) {
-        uploadFutures.add(
-          _uploadToOutbase(
-            fingerprint: currentFingerprint,
-            sourceFilename: item.sourceFilename,
-            startTime: item.startTime,
-            sessionMeta: sessionMeta,
-            uploadFile: uploadFile,
-            now: now,
-          ).then((r) => outbaseResults.add(r)),
-        );
-      }
-
-      // Run all platform uploads in parallel.
-      // Each helper catches all exceptions internally, so Future.wait
-      // never sees a rejected future — this is critical: if one helper
-      // let an exception escape, Future.wait would cancel the other.
-      await Future.wait(uploadFutures);
 
       // Aggregate Strava results
       for (final r in stravaResults) {
@@ -789,12 +826,26 @@ class SyncEngine {
     );
   }
 
+  Future<void> _deleteRewrittenFile(File? file, File originalFile) async {
+    if (file == null || file.path == originalFile.path) {
+      return;
+    }
+    try {
+      await file.delete();
+    } catch (_) {}
+    try {
+      await file.parent.delete();
+    } catch (_) {}
+  }
+
   Future<_PlatformUploadResult> _uploadToStrava({
     required String fingerprint,
     required String sourceFilename,
     required String startTime,
     required FitSessionMeta sessionMeta,
     required File uploadFile,
+    required File? correctedFile,
+    required String? correctionError,
     required String now,
   }) async {
     final platformResults = <PlatformSyncResult>[];
@@ -836,46 +887,22 @@ class SyncEngine {
         ),
       );
       sDeduped++;
+    } else if (correctionError != null) {
+      platformResults.add(
+        PlatformSyncResult(
+          platform: SyncPlatform.strava,
+          status: SyncStatus.failed,
+          errorMessage: correctionError,
+          syncedAt: now,
+        ),
+      );
+      failed++;
+      sFailures.add(
+        _failSummary(fingerprint, startTime, sessionMeta, '坐标转换失败'),
+      );
+      sFailureReasons.add('Strava 上传失败 ($sourceFilename): $correctionError');
     } else {
-      File effectiveUploadFile = uploadFile;
-      File? rewrittenFile;
-
-      if (gcjCorrectionEnabled) {
-        try {
-          final FitCoordinateRewriteService svc =
-              rewriteService ?? FitCoordinateRewriteService();
-          rewrittenFile = await svc.rewrite(
-            uploadFile,
-            options: RewriteOptions(
-              startTime: startTime,
-              sourceFilename: sourceFilename,
-            ),
-          );
-          effectiveUploadFile = rewrittenFile;
-        } catch (e) {
-          platformResults.add(
-            PlatformSyncResult(
-              platform: SyncPlatform.strava,
-              status: SyncStatus.failed,
-              errorMessage: '坐标转换失败: $e',
-              syncedAt: now,
-            ),
-          );
-          failed++;
-          sFailures.add(
-            _failSummary(fingerprint, startTime, sessionMeta, '坐标转换失败'),
-          );
-          return _PlatformUploadResult(
-            platformResults: platformResults,
-            uploaded: uploaded,
-            failed: failed,
-            success: sSuccess,
-            deduped: sDeduped,
-            failures: sFailures,
-            failureReasons: sFailureReasons,
-          );
-        }
-      }
+      final File effectiveUploadFile = correctedFile ?? uploadFile;
 
       try {
         final uploadId = await stravaClient!.uploadFit(effectiveUploadFile);
@@ -954,15 +981,6 @@ class SyncEngine {
           );
           sFailureReasons.add('Strava 上传失败 ($sourceFilename): $e');
         }
-      } finally {
-        if (rewrittenFile != null && rewrittenFile.path != uploadFile.path) {
-          try {
-            await rewrittenFile.delete();
-          } catch (_) {}
-          try {
-            await rewrittenFile.parent.delete();
-          } catch (_) {}
-        }
       }
     }
 
@@ -983,6 +1001,8 @@ class SyncEngine {
     required String startTime,
     required FitSessionMeta sessionMeta,
     required File uploadFile,
+    required File? correctedFile,
+    required String? correctionError,
     required String now,
   }) async {
     final platformResults = <PlatformSyncResult>[];
@@ -1001,9 +1021,25 @@ class SyncEngine {
         ),
       );
       xDeduped++;
+    } else if (correctionError != null) {
+      platformResults.add(
+        PlatformSyncResult(
+          platform: SyncPlatform.xingzhe,
+          status: SyncStatus.failed,
+          errorMessage: correctionError,
+          syncedAt: now,
+        ),
+      );
+      failed++;
+      xFailures.add(
+        _failSummary(fingerprint, startTime, sessionMeta, '坐标转换失败'),
+      );
+      xFailureReasons.add('行者 上传失败 ($sourceFilename): $correctionError');
     } else {
       try {
-        final uploadId = await xingzheClient!.uploadFit(uploadFile);
+        final uploadId = await xingzheClient!.uploadFit(
+          correctedFile ?? uploadFile,
+        );
         final result = await xingzheClient!.pollUpload(uploadId);
         final activityId = result['activity_id'];
         final error = result['error'];
@@ -1101,6 +1137,8 @@ class SyncEngine {
     required String startTime,
     required FitSessionMeta sessionMeta,
     required File uploadFile,
+    required File? correctedFile,
+    required String? correctionError,
     required String now,
   }) async {
     final platformResults = <PlatformSyncResult>[];
@@ -1122,9 +1160,27 @@ class SyncEngine {
         ),
       );
       iDeduped++;
+    } else if (correctionError != null) {
+      platformResults.add(
+        PlatformSyncResult(
+          platform: SyncPlatform.intervalsIcu,
+          status: SyncStatus.failed,
+          errorMessage: correctionError,
+          syncedAt: now,
+        ),
+      );
+      failed++;
+      iFailures.add(
+        _failSummary(fingerprint, startTime, sessionMeta, '坐标转换失败'),
+      );
+      iFailureReasons.add(
+        'Intervals.icu 上传失败 ($sourceFilename): $correctionError',
+      );
     } else {
       try {
-        final activityId = await intervalsIcuClient!.uploadFit(uploadFile);
+        final activityId = await intervalsIcuClient!.uploadFit(
+          correctedFile ?? uploadFile,
+        );
         await stateStore.markPlatformSynced(
           fingerprint,
           'intervals_icu',
@@ -1191,6 +1247,8 @@ class SyncEngine {
     required String startTime,
     required FitSessionMeta sessionMeta,
     required File uploadFile,
+    required File? correctedFile,
+    required String? correctionError,
     required String now,
   }) async {
     final platformResults = <PlatformSyncResult>[];
@@ -1209,9 +1267,25 @@ class SyncEngine {
         ),
       );
       oDeduped++;
+    } else if (correctionError != null) {
+      platformResults.add(
+        PlatformSyncResult(
+          platform: SyncPlatform.outbase,
+          status: SyncStatus.failed,
+          errorMessage: correctionError,
+          syncedAt: now,
+        ),
+      );
+      failed++;
+      oFailures.add(
+        _failSummary(fingerprint, startTime, sessionMeta, '坐标转换失败'),
+      );
+      oFailureReasons.add('Outbase 上传失败 ($sourceFilename): $correctionError');
     } else {
       try {
-        final result = await outbaseClient!.uploadFit(uploadFile);
+        final result = await outbaseClient!.uploadFit(
+          correctedFile ?? uploadFile,
+        );
         if (result.success) {
           await stateStore.markPlatformSynced(fingerprint, 'outbase', null);
           platformResults.add(

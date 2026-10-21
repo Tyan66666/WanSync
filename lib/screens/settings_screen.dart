@@ -10,6 +10,7 @@ import 'package:path_provider/path_provider.dart';
 import 'package:share_plus/share_plus.dart' show Share, XFile;
 
 import '../services/config_service.dart';
+import '../services/gcj_correction_settings.dart';
 import '../services/onelap_client.dart';
 import '../services/settings_service.dart';
 import 'intervals_icu_settings_screen.dart';
@@ -44,10 +45,18 @@ class _SettingsScreenState extends State<SettingsScreen> {
   final GlobalKey _exportButtonKey = GlobalKey();
   bool _loading = true;
   bool _savingOneLapCredentials = false;
-  bool _gcjCorrectionEnabled = false;
-  bool _savingGcjCorrectionEnabled = false;
-  bool? _pendingGcjCorrectionEnabled;
-  bool _confirmedGcjCorrectionEnabled = false;
+  final Map<String, bool> _gcjCorrection = <String, bool>{
+    for (final key in SettingsService.gcjCorrectionKeys) key: false,
+  };
+  final Map<String, bool> _confirmedGcjCorrection = <String, bool>{
+    for (final key in SettingsService.gcjCorrectionKeys) key: false,
+  };
+  final Map<String, bool> _savingGcjCorrection = <String, bool>{
+    for (final key in SettingsService.gcjCorrectionKeys) key: false,
+  };
+  final Map<String, bool?> _pendingGcjCorrection = <String, bool?>{
+    for (final key in SettingsService.gcjCorrectionKeys) key: null,
+  };
   bool _uploadToStrava = true;
   bool _uploadToXingzhe = false;
   bool _uploadToIntervalsIcu = false;
@@ -83,6 +92,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
     SettingsService.keyLookbackDays: '同步最近几天（默认 3）',
   };
 
+  static const Map<String, String> _gcjCorrectionLabels = {
+    SettingsService.keyGcjCorrectionStrava: 'Strava',
+    SettingsService.keyGcjCorrectionXingzhe: '行者',
+    SettingsService.keyGcjCorrectionIntervalsIcu: 'Intervals.icu',
+    SettingsService.keyGcjCorrectionOutbase: 'Outbase',
+  };
+
   @override
   void initState() {
     super.initState();
@@ -96,6 +112,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   Future<void> _load() async {
     final values = await _settingsService.loadSettings();
+    final GcjCorrectionSettings gcjCorrection =
+        GcjCorrectionSettings.fromSettings(values);
+    await _migrateLegacyGcjCorrection(values, gcjCorrection);
     if (!mounted) {
       return;
     }
@@ -105,9 +124,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
           : values[key] ?? '';
     }
     setState(() {
-      _gcjCorrectionEnabled =
-          values[SettingsService.keyGcjCorrectionEnabled] == 'true';
-      _confirmedGcjCorrectionEnabled = _gcjCorrectionEnabled;
+      _applyGcjCorrectionToState(gcjCorrection);
       _uploadToStrava = values[SettingsService.keyUploadToStrava] != 'false';
       _uploadToXingzhe = values[SettingsService.keyUploadToXingzhe] == 'true';
       _uploadToIntervalsIcu =
@@ -251,37 +268,71 @@ class _SettingsScreenState extends State<SettingsScreen> {
     }
   }
 
-  Future<void> _saveGcjCorrectionEnabled(bool value) async {
-    if (value == _gcjCorrectionEnabled &&
-        !_savingGcjCorrectionEnabled &&
-        _pendingGcjCorrectionEnabled == null) {
+  /// One-time migration of the legacy "Strava only" switch into the
+  /// per-platform keys, so later single-platform edits don't lose the value.
+  Future<void> _migrateLegacyGcjCorrection(
+    Map<String, String> values,
+    GcjCorrectionSettings gcjCorrection,
+  ) async {
+    final bool hasPerPlatformValue = SettingsService.gcjCorrectionKeys.any(
+      (String key) => (values[key] ?? '').trim().isNotEmpty,
+    );
+    final bool hasLegacyValue =
+        (values[SettingsService.keyGcjCorrectionEnabled] ?? '')
+            .trim()
+            .isNotEmpty;
+    if (hasPerPlatformValue || !hasLegacyValue) {
       return;
     }
 
-    setState(() => _gcjCorrectionEnabled = value);
+    try {
+      await _settingsService.saveSettings(gcjCorrection.toSettingsMap());
+    } catch (_) {
+      // Best-effort: the legacy fallback still resolves on every read.
+    }
+  }
 
-    if (_savingGcjCorrectionEnabled) {
-      _pendingGcjCorrectionEnabled = value;
+  void _applyGcjCorrectionToState(GcjCorrectionSettings gcjCorrection) {
+    _gcjCorrection[SettingsService.keyGcjCorrectionStrava] =
+        gcjCorrection.strava;
+    _gcjCorrection[SettingsService.keyGcjCorrectionXingzhe] =
+        gcjCorrection.xingzhe;
+    _gcjCorrection[SettingsService.keyGcjCorrectionIntervalsIcu] =
+        gcjCorrection.intervalsIcu;
+    _gcjCorrection[SettingsService.keyGcjCorrectionOutbase] =
+        gcjCorrection.outbase;
+    _confirmedGcjCorrection.addAll(_gcjCorrection);
+  }
+
+  Future<void> _saveGcjCorrection(String key, bool value) async {
+    if (value == _gcjCorrection[key] &&
+        !(_savingGcjCorrection[key] ?? false) &&
+        _pendingGcjCorrection[key] == null) {
       return;
     }
 
-    _savingGcjCorrectionEnabled = true;
+    setState(() => _gcjCorrection[key] = value);
+
+    if (_savingGcjCorrection[key] ?? false) {
+      _pendingGcjCorrection[key] = value;
+      return;
+    }
+
+    _savingGcjCorrection[key] = true;
     bool valueToPersist = value;
 
     while (true) {
-      _pendingGcjCorrectionEnabled = null;
+      _pendingGcjCorrection[key] = null;
 
       try {
-        await _settingsService.saveSettings({
-          SettingsService.keyGcjCorrectionEnabled: valueToPersist.toString(),
-        });
-        _confirmedGcjCorrectionEnabled = valueToPersist;
+        await _settingsService.saveSettings({key: valueToPersist.toString()});
+        _confirmedGcjCorrection[key] = valueToPersist;
       } catch (e) {
-        _savingGcjCorrectionEnabled = false;
-        _pendingGcjCorrectionEnabled = null;
+        _savingGcjCorrection[key] = false;
+        _pendingGcjCorrection[key] = null;
         if (mounted) {
           setState(
-            () => _gcjCorrectionEnabled = _confirmedGcjCorrectionEnabled,
+            () => _gcjCorrection[key] = _confirmedGcjCorrection[key] ?? false,
           );
           ScaffoldMessenger.of(
             context,
@@ -290,9 +341,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
         return;
       }
 
-      final bool? pendingValue = _pendingGcjCorrectionEnabled;
+      final bool? pendingValue = _pendingGcjCorrection[key];
       if (pendingValue == null || pendingValue == valueToPersist) {
-        _savingGcjCorrectionEnabled = false;
+        _savingGcjCorrection[key] = false;
         return;
       }
 
@@ -799,15 +850,24 @@ class _SettingsScreenState extends State<SettingsScreen> {
             style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
           ),
           const SizedBox(height: 8),
-          SwitchListTile(
-            contentPadding: EdgeInsets.zero,
-            title: const Text('Strava 上传前将 GCJ-02 转为 WGS84'),
-            subtitle: const Text(
-              '仅对 Strava 生效；行者、Intervals.icu、Outbase 上传原始文件',
-            ),
-            value: _gcjCorrectionEnabled,
-            onChanged: _saveGcjCorrectionEnabled,
+          Text(
+            '坐标纠偏（GCJ-02 → WGS84）',
+            style: Theme.of(context).textTheme.titleSmall,
           ),
+          const SizedBox(height: 4),
+          Text(
+            '按平台独立设置：开启后，该平台上传前会把 GCJ-02 坐标转为 WGS84；未开启的平台上传原始文件。',
+            style: Theme.of(context).textTheme.bodySmall,
+          ),
+          const SizedBox(height: 4),
+          for (final MapEntry<String, String> entry
+              in _gcjCorrectionLabels.entries)
+            SwitchListTile(
+              contentPadding: EdgeInsets.zero,
+              title: Text('${entry.value} 上传前将 GCJ-02 转为 WGS84'),
+              value: _gcjCorrection[entry.key] ?? false,
+              onChanged: (bool value) => _saveGcjCorrection(entry.key, value),
+            ),
           Padding(
             padding: const EdgeInsets.only(bottom: 12),
             child: TextField(

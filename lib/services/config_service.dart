@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:package_info_plus/package_info_plus.dart';
 
 import '../models/app_config.dart';
+import 'gcj_correction_settings.dart';
 import 'settings_service.dart';
 
 class ConfigService {
@@ -39,6 +40,8 @@ class ConfigService {
   }
 
   Map<String, dynamic> _settingsToJson(Map<String, String> settings) {
+    final GcjCorrectionSettings gcjCorrection =
+        GcjCorrectionSettings.fromSettings(settings);
     return {
       'onelap': {
         'username': settings[SettingsService.keyOneLapUsername] ?? '',
@@ -68,8 +71,14 @@ class ConfigService {
       'sync': {
         'lookbackDays':
             int.tryParse(settings[SettingsService.keyLookbackDays] ?? '') ?? 3,
-        'gcjCorrectionEnabled':
-            settings[SettingsService.keyGcjCorrectionEnabled] == 'true',
+        // 旧版客户端只认识这个开关，等价于「仅 Strava 纠偏」。
+        'gcjCorrectionEnabled': gcjCorrection.strava,
+        'gcjCorrection': {
+          'strava': gcjCorrection.strava,
+          'xingzhe': gcjCorrection.xingzhe,
+          'intervalsIcu': gcjCorrection.intervalsIcu,
+          'outbase': gcjCorrection.outbase,
+        },
         'uploadToStrava':
             settings[SettingsService.keyUploadToStrava] != 'false',
         'uploadToXingzhe':
@@ -89,6 +98,7 @@ class ConfigService {
     final intervalsIcu = _castMap(json['intervalsIcu']);
     final outbase = _castMap(json['outbase']);
     final sync = _castMap(json['sync']);
+    final gcjCorrection = _readGcjCorrection(sync);
 
     return {
       SettingsService.keyOneLapUsername: onelap['username'] ?? '',
@@ -107,8 +117,12 @@ class ConfigService {
       SettingsService.keyIntervalsIcuApiKey: intervalsIcu['apiKey'] ?? '',
       SettingsService.keyOutbaseSessionId: outbase['sessionId'] ?? '',
       SettingsService.keyLookbackDays: (sync['lookbackDays'] ?? 3).toString(),
-      SettingsService.keyGcjCorrectionEnabled:
-          (sync['gcjCorrectionEnabled'] ?? false).toString(),
+      SettingsService.keyGcjCorrectionEnabled: gcjCorrection.strava.toString(),
+      SettingsService.keyGcjCorrectionStrava: gcjCorrection.strava.toString(),
+      SettingsService.keyGcjCorrectionXingzhe: gcjCorrection.xingzhe.toString(),
+      SettingsService.keyGcjCorrectionIntervalsIcu: gcjCorrection.intervalsIcu
+          .toString(),
+      SettingsService.keyGcjCorrectionOutbase: gcjCorrection.outbase.toString(),
       SettingsService.keyUploadToStrava: (sync['uploadToStrava'] ?? true)
           .toString(),
       SettingsService.keyUploadToXingzhe: (sync['uploadToXingzhe'] ?? false)
@@ -118,6 +132,38 @@ class ConfigService {
       SettingsService.keyUploadToOutbase: (sync['uploadToOutbase'] ?? false)
           .toString(),
     };
+  }
+
+  /// Reads per-platform correction switches from an imported config.
+  ///
+  /// Configs exported before per-platform switches existed only carry the
+  /// legacy `gcjCorrectionEnabled` flag, which corrected Strava alone. The
+  /// fallback is applied per key so a partial/hand-edited map still imports
+  /// the legacy Strava value.
+  static GcjCorrectionSettings _readGcjCorrection(Map<String, dynamic> sync) {
+    final Map<String, dynamic> perPlatform = sync['gcjCorrection'] is Map
+        ? _castMap(sync['gcjCorrection'])
+        : const <String, dynamic>{};
+    final bool legacy = _asBool(sync['gcjCorrectionEnabled']);
+
+    bool read(String key, {bool legacyFallback = false}) {
+      if (perPlatform[key] != null) {
+        return _asBool(perPlatform[key]);
+      }
+      return legacyFallback && legacy;
+    }
+
+    return GcjCorrectionSettings(
+      strava: read('strava', legacyFallback: true),
+      xingzhe: read('xingzhe'),
+      intervalsIcu: read('intervalsIcu'),
+      outbase: read('outbase'),
+    );
+  }
+
+  static bool _asBool(dynamic value) {
+    if (value is bool) return value;
+    return '${value ?? ''}'.trim().toLowerCase() == 'true';
   }
 
   static Map<String, dynamic> _castMap(dynamic value) {

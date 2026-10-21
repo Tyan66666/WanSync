@@ -7,6 +7,7 @@ import 'package:crypto/crypto.dart';
 import 'dedupe_service.dart';
 import 'fit_coordinate_rewrite_service.dart';
 import 'fit_upload_coordinator.dart';
+import 'gcj_correction_settings.dart';
 import 'settings_service.dart';
 import 'state_store.dart';
 
@@ -107,12 +108,18 @@ class SharedFitUploadService {
     File uploadFile = file;
     bool shouldDeleteUploadFile = false;
     final Map<FitUploadPlatform, File> fileOverrides = {};
-    final bool rewriteForStrava =
-        _isGcjCorrectionEnabled(settings) &&
-        plan.targets.contains(FitUploadPlatform.strava);
+    final GcjCorrectionSettings gcjCorrection =
+        GcjCorrectionSettings.fromSettings(settings);
+    final List<FitUploadPlatform> correctionTargets = plan.targets
+        .where(
+          (FitUploadPlatform platform) =>
+              gcjCorrection.forSyncPlatform(_mapSyncPlatform(platform)),
+        )
+        .toList();
 
     try {
-      if (rewriteForStrava) {
+      String? correctionError;
+      if (correctionTargets.isNotEmpty) {
         final FitCoordinateRewriteService rewriteService =
             _rewriteService ?? FitCoordinateRewriteService();
         try {
@@ -124,40 +131,57 @@ class SharedFitUploadService {
             ),
           );
           shouldDeleteUploadFile = uploadFile.path != file.path;
-          fileOverrides[FitUploadPlatform.strava] = uploadFile;
-        } on Exception catch (error) {
-          final String message =
-              'FIT coordinate rewrite failed: ${'$error'.replaceFirst('Exception: ', '')}';
-          final bool hasOtherTargets = plan.targets.any(
-            (FitUploadPlatform platform) =>
-                platform != FitUploadPlatform.strava,
-          );
-          if (!hasOtherTargets) {
-            return SharedFitUploadResult(
-              status: SharedFitUploadStatus.failure,
-              message: message,
-            );
+          for (final FitUploadPlatform platform in correctionTargets) {
+            fileOverrides[platform] = uploadFile;
           }
+        } on Exception catch (error) {
+          correctionError =
+              'FIT coordinate rewrite failed: ${'$error'.replaceFirst('Exception: ', '')}';
+        }
+      }
 
-          // Strava 转换失败时，其他平台继续用原始文件上传。
-          final Map<String, String> otherSettings = Map<String, String>.from(
-            settings,
-          );
-          otherSettings[SettingsService.keyUploadToStrava] = 'false';
-          final FitUploadCoordinatorResult otherResult = await _coordinator
-              .uploadFile(file, otherSettings);
-          final FitUploadCoordinatorResult mergedResult = _mergeRewriteFailure(
-            stravaFailureMessage: message,
-            otherResult: otherResult,
-          );
-          return await _completeUpload(
-            coordinatorResult: mergedResult,
-            draft: draft,
-            file: file,
-            plan: plan,
-            sessionMeta: sessionMeta,
+      if (correctionError != null) {
+        final List<FitUploadPlatform> otherTargets = plan.targets
+            .where(
+              (FitUploadPlatform platform) =>
+                  !correctionTargets.contains(platform),
+            )
+            .toList();
+        if (otherTargets.isEmpty) {
+          return SharedFitUploadResult(
+            status: SharedFitUploadStatus.failure,
+            message: correctionError,
           );
         }
+
+        // 纠偏失败时，未开启纠偏的平台继续用原始文件上传。
+        final Map<String, String> otherSettings = Map<String, String>.from(
+          settings,
+        );
+        for (final FitUploadPlatform platform in correctionTargets) {
+          otherSettings[_uploadKeyFor(platform)] = 'false';
+        }
+        final FitUploadCoordinatorResult otherResult = await _coordinator
+            .uploadFile(file, otherSettings);
+        final FitUploadCoordinatorResult mergedResult = _mergeRewriteFailures(
+          failedPlatforms: correctionTargets,
+          failureMessage: correctionError,
+          otherResult: otherResult,
+        );
+        // Only platforms that were actually attempted may be flagged in the
+        // history record; corrected targets never received a file.
+        final FitUploadPlan attemptedPlan = FitUploadPlan(
+          targets: otherTargets,
+          hasMissingConfiguration: false,
+          targetLabel: plan.targetLabel,
+        );
+        return await _completeUpload(
+          coordinatorResult: mergedResult,
+          draft: draft,
+          file: file,
+          plan: attemptedPlan,
+          sessionMeta: sessionMeta,
+        );
       }
 
       final FitUploadCoordinatorResult coordinatorResult = await _coordinator
@@ -214,17 +238,19 @@ class SharedFitUploadService {
     return result;
   }
 
-  FitUploadCoordinatorResult _mergeRewriteFailure({
-    required String stravaFailureMessage,
+  FitUploadCoordinatorResult _mergeRewriteFailures({
+    required List<FitUploadPlatform> failedPlatforms,
+    required String failureMessage,
     required FitUploadCoordinatorResult otherResult,
   }) {
     final List<FitUploadPlatformResult> mergedResults =
         <FitUploadPlatformResult>[
-          FitUploadPlatformResult(
-            platform: FitUploadPlatform.strava,
-            status: FitUploadPlatformStatus.failure,
-            message: stravaFailureMessage,
-          ),
+          for (final FitUploadPlatform platform in failedPlatforms)
+            FitUploadPlatformResult(
+              platform: platform,
+              status: FitUploadPlatformStatus.failure,
+              message: failureMessage,
+            ),
           ...otherResult.platformResults,
         ];
 
@@ -258,11 +284,13 @@ class SharedFitUploadService {
         draft.displayName.toLowerCase().endsWith('.fit');
   }
 
-  bool _isGcjCorrectionEnabled(Map<String, String> settings) {
-    return (settings[SettingsService.keyGcjCorrectionEnabled] ?? '')
-            .trim()
-            .toLowerCase() ==
-        'true';
+  String _uploadKeyFor(FitUploadPlatform platform) {
+    return switch (platform) {
+      FitUploadPlatform.strava => SettingsService.keyUploadToStrava,
+      FitUploadPlatform.xingzhe => SettingsService.keyUploadToXingzhe,
+      FitUploadPlatform.intervalsIcu => SettingsService.keyUploadToIntervalsIcu,
+      FitUploadPlatform.outbase => SettingsService.keyUploadToOutbase,
+    };
   }
 
   Future<bool> _isReadableFile(File file) async {

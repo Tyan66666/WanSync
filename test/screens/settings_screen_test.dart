@@ -144,11 +144,15 @@ void main() {
     return find.text(text);
   }
 
-  Finder gcjCorrectionSwitch() {
+  Finder gcjCorrectionSwitchFor(String title) {
     return find.descendant(
-      of: find.widgetWithText(SwitchListTile, 'Strava 上传前将 GCJ-02 转为 WGS84'),
+      of: find.widgetWithText(SwitchListTile, title),
       matching: find.byType(Switch),
     );
+  }
+
+  Finder gcjCorrectionSwitch() {
+    return gcjCorrectionSwitchFor('Strava 上传前将 GCJ-02 转为 WGS84');
   }
 
   Finder platformSwitch(String platformTitle) {
@@ -441,27 +445,121 @@ void main() {
     expect(settings[SettingsService.keyOneLapUsername], 'stable-user');
   });
 
-  testWidgets('rewrite switch loads from stored settings', (
+  testWidgets('rewrite switches load from stored per-platform settings', (
     WidgetTester tester,
   ) async {
     useLargeTestViewport(tester);
 
     FlutterSecureStorage.setMockInitialValues(<String, String>{
-      SettingsService.keyGcjCorrectionEnabled: 'true',
+      SettingsService.keyGcjCorrectionStrava: 'true',
+      SettingsService.keyGcjCorrectionXingzhe: 'false',
+      SettingsService.keyGcjCorrectionIntervalsIcu: 'true',
+      SettingsService.keyGcjCorrectionOutbase: 'false',
     });
 
     await tester.pumpWidget(const MaterialApp(home: SettingsScreen()));
     await tester.pumpAndSettle();
 
-    expect(find.text('Strava 上传前将 GCJ-02 转为 WGS84'), findsOneWidget);
-    expect(
-      find.text('仅对 Strava 生效；行者、Intervals.icu、Outbase 上传原始文件'),
-      findsOneWidget,
-    );
+    final Map<String, String> labels = <String, String>{
+      SettingsService.keyGcjCorrectionStrava: 'Strava 上传前将 GCJ-02 转为 WGS84',
+      SettingsService.keyGcjCorrectionXingzhe: '行者 上传前将 GCJ-02 转为 WGS84',
+      SettingsService.keyGcjCorrectionIntervalsIcu:
+          'Intervals.icu 上传前将 GCJ-02 转为 WGS84',
+      SettingsService.keyGcjCorrectionOutbase: 'Outbase 上传前将 GCJ-02 转为 WGS84',
+    };
+    for (final MapEntry<String, String> entry in labels.entries) {
+      expect(find.text(entry.value), findsOneWidget);
+    }
 
-    final Switch rewriteSwitch = tester.widget<Switch>(gcjCorrectionSwitch());
-    expect(rewriteSwitch.value, isTrue);
+    expect(tester.widget<Switch>(gcjCorrectionSwitch()).value, isTrue);
+    expect(
+      tester
+          .widget<Switch>(gcjCorrectionSwitchFor('行者 上传前将 GCJ-02 转为 WGS84'))
+          .value,
+      isFalse,
+    );
+    expect(
+      tester
+          .widget<Switch>(
+            gcjCorrectionSwitchFor('Intervals.icu 上传前将 GCJ-02 转为 WGS84'),
+          )
+          .value,
+      isTrue,
+    );
+    expect(
+      tester
+          .widget<Switch>(
+            gcjCorrectionSwitchFor('Outbase 上传前将 GCJ-02 转为 WGS84'),
+          )
+          .value,
+      isFalse,
+    );
   });
+
+  testWidgets(
+    'legacy Strava-only rewrite setting migrates to per-platform keys',
+    (WidgetTester tester) async {
+      useLargeTestViewport(tester);
+
+      final InMemorySettingsStore store = InMemorySettingsStore(
+        <String, String>{SettingsService.keyGcjCorrectionEnabled: 'true'},
+      );
+      final SettingsService settingsService = SettingsService(store: store);
+
+      await tester.pumpWidget(
+        MaterialApp(home: SettingsScreen(settingsService: settingsService)),
+      );
+      await tester.pumpAndSettle();
+
+      expect(tester.widget<Switch>(gcjCorrectionSwitch()).value, isTrue);
+      expect(
+        tester
+            .widget<Switch>(gcjCorrectionSwitchFor('行者 上传前将 GCJ-02 转为 WGS84'))
+            .value,
+        isFalse,
+      );
+
+      final Map<String, String> settings = await settingsService.loadSettings();
+      expect(settings[SettingsService.keyGcjCorrectionStrava], 'true');
+      expect(settings[SettingsService.keyGcjCorrectionXingzhe], 'false');
+      expect(settings[SettingsService.keyGcjCorrectionIntervalsIcu], 'false');
+      expect(settings[SettingsService.keyGcjCorrectionOutbase], 'false');
+    },
+  );
+
+  testWidgets(
+    'toggling a platform rewrite switch persists only that platform',
+    (WidgetTester tester) async {
+      useLargeTestViewport(tester);
+
+      final InMemorySettingsStore store =
+          InMemorySettingsStore(<String, String>{
+            SettingsService.keyGcjCorrectionStrava: 'false',
+            SettingsService.keyGcjCorrectionXingzhe: 'false',
+            SettingsService.keyGcjCorrectionIntervalsIcu: 'false',
+            SettingsService.keyGcjCorrectionOutbase: 'false',
+          });
+      final SettingsService settingsService = SettingsService(store: store);
+
+      await tester.pumpWidget(
+        MaterialApp(home: SettingsScreen(settingsService: settingsService)),
+      );
+      await tester.pumpAndSettle();
+
+      final Finder xingzheSwitch = gcjCorrectionSwitchFor(
+        '行者 上传前将 GCJ-02 转为 WGS84',
+      );
+      await tester.ensureVisible(xingzheSwitch);
+      await tester.tap(xingzheSwitch);
+      await tester.pumpAndSettle();
+
+      final Map<String, String> settings = await settingsService.loadSettings();
+      expect(settings[SettingsService.keyGcjCorrectionStrava], 'false');
+      expect(settings[SettingsService.keyGcjCorrectionXingzhe], 'true');
+      expect(settings[SettingsService.keyGcjCorrectionIntervalsIcu], 'false');
+      expect(settings[SettingsService.keyGcjCorrectionOutbase], 'false');
+    },
+  );
 
   testWidgets('toggling rewrite switch and saving sync settings persists it', (
     WidgetTester tester,
@@ -470,7 +568,7 @@ void main() {
 
     FlutterSecureStorage.setMockInitialValues(<String, String>{
       SettingsService.keyLookbackDays: '3',
-      SettingsService.keyGcjCorrectionEnabled: 'false',
+      SettingsService.keyGcjCorrectionStrava: 'false',
     });
 
     await tester.pumpWidget(const MaterialApp(home: SettingsScreen()));
@@ -485,7 +583,7 @@ void main() {
 
     final Map<String, String> settings = await SettingsService().loadSettings();
     expect(settings[SettingsService.keyLookbackDays], '7');
-    expect(settings[SettingsService.keyGcjCorrectionEnabled], 'true');
+    expect(settings[SettingsService.keyGcjCorrectionStrava], 'true');
   });
 
   testWidgets('tapping rewrite switch immediately persists GCJ setting', (
@@ -494,7 +592,7 @@ void main() {
     useLargeTestViewport(tester);
 
     final InMemorySettingsStore store = InMemorySettingsStore(<String, String>{
-      SettingsService.keyGcjCorrectionEnabled: 'false',
+      SettingsService.keyGcjCorrectionStrava: 'false',
       SettingsService.keyLookbackDays: '3',
     });
     final SettingsService settingsService = SettingsService(store: store);
@@ -509,7 +607,7 @@ void main() {
     await tester.pumpAndSettle();
 
     final Map<String, String> settings = await settingsService.loadSettings();
-    expect(settings[SettingsService.keyGcjCorrectionEnabled], 'true');
+    expect(settings[SettingsService.keyGcjCorrectionStrava], 'true');
     expect(settings[SettingsService.keyLookbackDays], '3');
   });
 
@@ -520,7 +618,7 @@ void main() {
 
     final ControlledWriteSettingsStore store =
         ControlledWriteSettingsStore(<String, String>{
-          SettingsService.keyGcjCorrectionEnabled: 'false',
+          SettingsService.keyGcjCorrectionStrava: 'false',
           SettingsService.keyLookbackDays: '3',
         });
     final SettingsService settingsService = SettingsService(store: store);
@@ -535,7 +633,7 @@ void main() {
     await tester.pump();
 
     expect(store.writes, hasLength(1));
-    expect(store.writes[0].key, SettingsService.keyGcjCorrectionEnabled);
+    expect(store.writes[0].key, SettingsService.keyGcjCorrectionStrava);
     expect(store.writes[0].value, 'true');
 
     await tester.tap(gcjCorrectionSwitch());
@@ -549,14 +647,14 @@ void main() {
     await tester.pump();
 
     expect(store.writes, hasLength(2));
-    expect(store.writes[1].key, SettingsService.keyGcjCorrectionEnabled);
+    expect(store.writes[1].key, SettingsService.keyGcjCorrectionStrava);
     expect(store.writes[1].value, 'false');
 
     store.writes[1].completer.complete();
     await tester.pumpAndSettle();
 
     final Map<String, String> settings = await settingsService.loadSettings();
-    expect(settings[SettingsService.keyGcjCorrectionEnabled], 'false');
+    expect(settings[SettingsService.keyGcjCorrectionStrava], 'false');
   });
 
   testWidgets(
@@ -566,7 +664,7 @@ void main() {
 
       final FailControlledWriteSettingsStore store =
           FailControlledWriteSettingsStore(<String, String>{
-            SettingsService.keyGcjCorrectionEnabled: 'false',
+            SettingsService.keyGcjCorrectionStrava: 'false',
             SettingsService.keyLookbackDays: '3',
           });
       final SettingsService settingsService = SettingsService(store: store);
@@ -596,7 +694,7 @@ void main() {
       expect(find.text('设置保存失败: Exception: save failed'), findsOneWidget);
 
       final Map<String, String> settings = await settingsService.loadSettings();
-      expect(settings[SettingsService.keyGcjCorrectionEnabled], 'true');
+      expect(settings[SettingsService.keyGcjCorrectionStrava], 'true');
     },
   );
 
@@ -607,7 +705,7 @@ void main() {
 
       final SettingsService settingsService = SettingsService(
         store: ThrowOnWriteSettingsStore(<String, String>{
-          SettingsService.keyGcjCorrectionEnabled: 'false',
+          SettingsService.keyGcjCorrectionStrava: 'false',
           SettingsService.keyLookbackDays: '3',
         }),
       );
