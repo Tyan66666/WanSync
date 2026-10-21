@@ -200,10 +200,12 @@ class SyncEngine {
       final sessionMeta = dlResult.meta;
       final fitFile = dlResult.file;
 
-      // ---- 2. 生成 dedupeKey（startTime + distance），检查是否命中 ----
+      // ---- 2. 生成 dedupeKey（归一化起始时间 + 距离），检查是否命中 ----
       final distM = sessionMeta.distanceM;
-      final dedupeKey =
-          '${item.startTime}_${distM != null ? distM.round() : 'na'}_${item.timeSeconds ?? 'na'}';
+      final dedupeKey = buildDedupeKey(
+        startTime: item.startTime,
+        distanceM: distM,
+      );
       final alreadyDeduped = await stateStore.isDedupeKey(dedupeKey);
 
       if (alreadyDeduped) {
@@ -219,12 +221,12 @@ class SyncEngine {
           if (uploadToStrava) {
             final already = await stateStore.isAlreadyUploaded(
               storedFp,
-              'strava',
+              SyncPlatform.strava.storageKey,
             );
             if (already) {
               final remoteId = await stateStore.getRemoteActivityId(
                 storedFp,
-                'strava',
+                SyncPlatform.strava.storageKey,
               );
               bool verified = true;
               if (remoteId != null && stravaClient != null) {
@@ -242,14 +244,17 @@ class SyncEngine {
                   ),
                 );
               } else {
-                await stateStore.clearPlatformStatus(storedFp, 'strava');
+                await stateStore.clearPlatformStatus(
+                  storedFp,
+                  SyncPlatform.strava.storageKey,
+                );
               }
             }
           }
           if (uploadToXingzhe) {
             final already = await stateStore.isAlreadyUploaded(
               storedFp,
-              'xingzhe',
+              SyncPlatform.xingzhe.storageKey,
             );
             if (already) {
               skipXingzhe = true;
@@ -267,7 +272,7 @@ class SyncEngine {
           if (uploadToIntervalsIcu) {
             final already = await stateStore.isAlreadyUploaded(
               storedFp,
-              'intervals_icu',
+              SyncPlatform.intervalsIcu.storageKey,
             );
             if (already) {
               skipIntervalsIcu = true;
@@ -285,7 +290,7 @@ class SyncEngine {
           if (uploadToOutbase) {
             final already = await stateStore.isAlreadyUploaded(
               storedFp,
-              'outbase',
+              SyncPlatform.outbase.storageKey,
             );
             if (already) {
               skipOutbase = true;
@@ -357,12 +362,12 @@ class SyncEngine {
         if (uploadToStrava) {
           final already = await stateStore.isAlreadyUploaded(
             currentFingerprint,
-            'strava',
+            SyncPlatform.strava.storageKey,
           );
           if (already) {
             final remoteId = await stateStore.getRemoteActivityId(
               currentFingerprint,
-              'strava',
+              SyncPlatform.strava.storageKey,
             );
             bool verified = true;
             if (remoteId != null && stravaClient != null) {
@@ -382,7 +387,7 @@ class SyncEngine {
             } else {
               await stateStore.clearPlatformStatus(
                 currentFingerprint,
-                'strava',
+                SyncPlatform.strava.storageKey,
               );
             }
           }
@@ -390,7 +395,7 @@ class SyncEngine {
         if (uploadToXingzhe) {
           final already = await stateStore.isAlreadyUploaded(
             currentFingerprint,
-            'xingzhe',
+            SyncPlatform.xingzhe.storageKey,
           );
           if (already) {
             skipXingzhe = true;
@@ -408,7 +413,7 @@ class SyncEngine {
         if (uploadToIntervalsIcu) {
           final already = await stateStore.isAlreadyUploaded(
             currentFingerprint,
-            'intervals_icu',
+            SyncPlatform.intervalsIcu.storageKey,
           );
           if (already) {
             skipIntervalsIcu = true;
@@ -426,7 +431,7 @@ class SyncEngine {
         if (uploadToOutbase) {
           final already = await stateStore.isAlreadyUploaded(
             currentFingerprint,
-            'outbase',
+            SyncPlatform.outbase.storageKey,
           );
           if (already) {
             skipOutbase = true;
@@ -856,14 +861,14 @@ class SyncEngine {
 
     final alreadySynced = await stateStore.isAlreadyUploaded(
       fingerprint,
-      'strava',
+      SyncPlatform.strava.storageKey,
     );
     bool shouldSkip = false;
 
     if (alreadySynced) {
       final remoteId = await stateStore.getRemoteActivityId(
         fingerprint,
-        'strava',
+        SyncPlatform.strava.storageKey,
       );
       bool verified = true;
       if (remoteId != null && stravaClient != null) {
@@ -874,7 +879,10 @@ class SyncEngine {
       if (verified) {
         shouldSkip = true;
       } else {
-        await stateStore.clearPlatformStatus(fingerprint, 'strava');
+        await stateStore.clearPlatformStatus(
+          fingerprint,
+          SyncPlatform.strava.storageKey,
+        );
       }
     }
 
@@ -915,7 +923,11 @@ class SyncEngine {
           if (errorStr.contains('duplicate of')) {
             // Safe to call concurrently — Dart is single-threaded, so both
             // platform helpers mutate the same cached Map reference.
-            await stateStore.markPlatformSynced(fingerprint, 'strava', null);
+            await stateStore.markPlatformSynced(
+              fingerprint,
+              SyncPlatform.strava.storageKey,
+              null,
+            );
             platformResults.add(
               PlatformSyncResult(
                 platform: SyncPlatform.strava,
@@ -942,7 +954,11 @@ class SyncEngine {
           }
         } else {
           final aid = (activityId as num).toInt();
-          await stateStore.markPlatformSynced(fingerprint, 'strava', aid);
+          await stateStore.markPlatformSynced(
+            fingerprint,
+            SyncPlatform.strava.storageKey,
+            aid,
+          );
           platformResults.add(
             PlatformSyncResult(
               platform: SyncPlatform.strava,
@@ -956,7 +972,11 @@ class SyncEngine {
         }
       } catch (e) {
         if (_isIdempotentSuccess(e)) {
-          await stateStore.markPlatformSynced(fingerprint, 'strava', null);
+          await stateStore.markPlatformSynced(
+            fingerprint,
+            SyncPlatform.strava.storageKey,
+            null,
+          );
           platformResults.add(
             PlatformSyncResult(
               platform: SyncPlatform.strava,
@@ -1011,7 +1031,10 @@ class SyncEngine {
     final List<FailedActivitySummary> xFailures = [];
     final List<String> xFailureReasons = [];
 
-    final skip = await stateStore.isAlreadyUploaded(fingerprint, 'xingzhe');
+    final skip = await stateStore.isAlreadyUploaded(
+      fingerprint,
+      SyncPlatform.xingzhe.storageKey,
+    );
     if (skip) {
       platformResults.add(
         PlatformSyncResult(
@@ -1063,7 +1086,11 @@ class SyncEngine {
           } else {
             // Safe to call concurrently — Dart is single-threaded, so both
             // platform helpers mutate the same cached Map reference.
-            await stateStore.markPlatformSynced(fingerprint, 'xingzhe', null);
+            await stateStore.markPlatformSynced(
+              fingerprint,
+              SyncPlatform.xingzhe.storageKey,
+              null,
+            );
             platformResults.add(
               PlatformSyncResult(
                 platform: SyncPlatform.xingzhe,
@@ -1078,7 +1105,11 @@ class SyncEngine {
           final aid = activityId is int
               ? activityId
               : int.tryParse('$activityId') ?? 0;
-          await stateStore.markPlatformSynced(fingerprint, 'xingzhe', aid);
+          await stateStore.markPlatformSynced(
+            fingerprint,
+            SyncPlatform.xingzhe.storageKey,
+            aid,
+          );
           platformResults.add(
             PlatformSyncResult(
               platform: SyncPlatform.xingzhe,
@@ -1092,7 +1123,11 @@ class SyncEngine {
         }
       } catch (e) {
         if (_isIdempotentSuccess(e)) {
-          await stateStore.markPlatformSynced(fingerprint, 'xingzhe', null);
+          await stateStore.markPlatformSynced(
+            fingerprint,
+            SyncPlatform.xingzhe.storageKey,
+            null,
+          );
           platformResults.add(
             PlatformSyncResult(
               platform: SyncPlatform.xingzhe,
@@ -1149,7 +1184,7 @@ class SyncEngine {
 
     final skip = await stateStore.isAlreadyUploaded(
       fingerprint,
-      'intervals_icu',
+      SyncPlatform.intervalsIcu.storageKey,
     );
     if (skip) {
       platformResults.add(
@@ -1183,7 +1218,7 @@ class SyncEngine {
         );
         await stateStore.markPlatformSynced(
           fingerprint,
-          'intervals_icu',
+          SyncPlatform.intervalsIcu.storageKey,
           activityId > 0 ? activityId : null,
         );
         platformResults.add(
@@ -1200,7 +1235,7 @@ class SyncEngine {
         if (_isIdempotentSuccess(e)) {
           await stateStore.markPlatformSynced(
             fingerprint,
-            'intervals_icu',
+            SyncPlatform.intervalsIcu.storageKey,
             null,
           );
           platformResults.add(
@@ -1257,7 +1292,10 @@ class SyncEngine {
     final List<FailedActivitySummary> oFailures = [];
     final List<String> oFailureReasons = [];
 
-    final skip = await stateStore.isAlreadyUploaded(fingerprint, 'outbase');
+    final skip = await stateStore.isAlreadyUploaded(
+      fingerprint,
+      SyncPlatform.outbase.storageKey,
+    );
     if (skip) {
       platformResults.add(
         PlatformSyncResult(
@@ -1287,7 +1325,11 @@ class SyncEngine {
           correctedFile ?? uploadFile,
         );
         if (result.success) {
-          await stateStore.markPlatformSynced(fingerprint, 'outbase', null);
+          await stateStore.markPlatformSynced(
+            fingerprint,
+            SyncPlatform.outbase.storageKey,
+            null,
+          );
           platformResults.add(
             PlatformSyncResult(
               platform: SyncPlatform.outbase,
@@ -1298,7 +1340,11 @@ class SyncEngine {
           uploaded++;
           oSuccess++;
         } else if (result.alreadyUploaded) {
-          await stateStore.markPlatformSynced(fingerprint, 'outbase', null);
+          await stateStore.markPlatformSynced(
+            fingerprint,
+            SyncPlatform.outbase.storageKey,
+            null,
+          );
           platformResults.add(
             PlatformSyncResult(
               platform: SyncPlatform.outbase,

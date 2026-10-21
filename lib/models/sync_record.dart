@@ -1,4 +1,17 @@
-enum SyncPlatform { strava, xingzhe, intervalsIcu, outbase }
+enum SyncPlatform {
+  strava('strava'),
+  xingzhe('xingzhe'),
+  intervalsIcu('intervals_icu'),
+  outbase('outbase');
+
+  const SyncPlatform(this.storageKey);
+
+  /// Key used for per-platform entries in `state.json`.
+  ///
+  /// Share-intake uploads used to store Intervals.icu as `intervalsIcu`; the
+  /// value here matches the automatic sync engine and must stay stable.
+  final String storageKey;
+}
 
 enum SyncStatus { pending, success, failed, deduped }
 

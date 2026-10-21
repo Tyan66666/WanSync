@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:path_provider/path_provider.dart';
 import '../models/sync_record.dart';
 import '../models/sync_result_banner.dart';
+import 'dedupe_service.dart';
 
 class StateStore {
   String _fallbackHistoryIdentity(SyncRecord record) {
@@ -85,10 +86,27 @@ class StateStore {
     return (data['synced'] as Map).containsKey(fingerprint);
   }
 
+  /// Canonical platform storage key for `state.json`.
+  ///
+  /// Share-intake uploads wrote Intervals.icu as `intervalsIcu` while automatic
+  /// sync uses `intervals_icu`; both spellings must resolve to the same state.
+  static String _canonicalPlatform(String platform) {
+    return platform == 'intervalsIcu' ? 'intervals_icu' : platform;
+  }
+
+  /// All storage keys a platform may have been stored under (legacy aliases
+  /// included). The canonical key comes first.
+  static List<String> _platformAliases(String platform) {
+    return _canonicalPlatform(platform) == 'intervals_icu'
+        ? const <String>['intervals_icu', 'intervalsIcu']
+        : <String>[_canonicalPlatform(platform)];
+  }
+
   /// 检查某 fingerprint 是否已成功上传到指定平台。
   /// 优先用 dedupeKey 查（稳定 key）；fallback 到 synced 指纹表。
   Future<bool> isAlreadyUploaded(String fingerprint, String platform) async {
     final data = await _load();
+    final aliases = _platformAliases(platform);
     // 1. 优先查 dedupeKeys（稳定的，按 startTime+distance 生成）
     final dedupeKeys = data['dedupeKeys'] as Map?;
     if (dedupeKeys != null) {
@@ -96,15 +114,17 @@ class StateStore {
         final v = entry.value;
         if (v is Map && (v['fingerprint'] as String?) == fingerprint) {
           final platforms = v['platforms'] as Map?;
-          if (platforms?[platform] == 'success') return true;
+          if (aliases.any((alias) => platforms?[alias] == 'success')) {
+            return true;
+          }
         }
       }
     }
     // 2. fallback：查 synced 指纹表（老格式兼容）
     final synced = (data['synced'] as Map)[fingerprint] as Map?;
     if (synced != null) {
-      final status = synced['platforms']?[platform] as String?;
-      return status == 'success';
+      final platforms = synced['platforms'] as Map?;
+      return aliases.any((alias) => platforms?[alias] == 'success');
     }
     return false;
   }
@@ -113,20 +133,26 @@ class StateStore {
     final data = await _load();
     final synced = (data['synced'] as Map)[fingerprint] as Map?;
     if (synced == null) return null;
-    final id = synced['${platform}_activity_id'];
-    if (id is int) return id;
-    if (id is num) return id.toInt();
+    for (final alias in _platformAliases(platform)) {
+      final id = synced['${alias}_activity_id'];
+      if (id is int) return id;
+      if (id is num) return id.toInt();
+    }
     return null;
   }
 
   Future<void> clearPlatformStatus(String fingerprint, String platform) async {
     final data = await _load();
+    final aliases = _platformAliases(platform);
 
     // 1. Clear synced table
     final synced = (data['synced'] as Map)[fingerprint] as Map?;
     if (synced != null) {
-      (synced['platforms'] as Map?)?.remove(platform);
-      synced.remove('${platform}_activity_id');
+      final platforms = synced['platforms'] as Map?;
+      for (final alias in aliases) {
+        platforms?.remove(alias);
+        synced.remove('${alias}_activity_id');
+      }
     }
 
     // 2. Clear dedupeKeys
@@ -135,7 +161,10 @@ class StateStore {
       for (final entry in dedupeKeys.entries) {
         final v = entry.value;
         if (v is Map && (v['fingerprint'] as String?) == fingerprint) {
-          (v['platforms'] as Map?)?.remove(platform);
+          final platforms = v['platforms'] as Map?;
+          for (final alias in aliases) {
+            platforms?.remove(alias);
+          }
           break;
         }
       }
@@ -162,12 +191,13 @@ class StateStore {
     int? remoteActivityId,
   ) async {
     final data = await _load();
+    final canonicalPlatform = _canonicalPlatform(platform);
     final synced = (data['synced'] as Map)[fingerprint] as Map? ?? {};
     synced['platforms'] ??= {};
-    (synced['platforms'] as Map)[platform] = 'success';
+    (synced['platforms'] as Map)[canonicalPlatform] = 'success';
     synced['synced_at'] = DateTime.now().toUtc().toIso8601String();
     if (remoteActivityId != null) {
-      synced['${platform}_activity_id'] = remoteActivityId;
+      synced['${canonicalPlatform}_activity_id'] = remoteActivityId;
     }
     (data['synced'] as Map)[fingerprint] = synced;
 
@@ -177,11 +207,23 @@ class StateStore {
       for (final entry in dedupeKeys.entries) {
         final v = entry.value;
         if (v is Map && (v['fingerprint'] as String?) == fingerprint) {
-          (v['platforms'] as Map? ?? {})[platform] = 'success';
+          (v['platforms'] as Map? ?? {})[canonicalPlatform] = 'success';
           break;
         }
       }
     }
+    await _save(data);
+  }
+
+  /// Clears every platform's synced marker and dedupe keys.
+  ///
+  /// Sync history is intentionally kept so the user can still see what was
+  /// uploaded before the reset. The next sync run treats every activity as
+  /// not-yet-synced and uploads it again to all enabled platforms.
+  Future<void> resetSyncState() async {
+    final data = await _load();
+    data['synced'] = <String, dynamic>{};
+    data['dedupeKeys'] = <String, dynamic>{};
     await _save(data);
   }
 
@@ -201,15 +243,54 @@ class StateStore {
   /// 同时存 fingerprint 用于后续运行按平台判断（`isAlreadyUploaded` 查询 synced 指纹表）。
   Future<bool> isDedupeKey(String dedupeKey) async {
     final data = await _load();
-    return ((data['dedupeKeys'] as Map?)?.containsKey(dedupeKey) ?? false);
+    final dedupeKeys = (data['dedupeKeys'] as Map?) ?? {};
+    return _matchDedupeKey(dedupeKeys, dedupeKey) != null;
   }
 
   /// 获取 dedupeKey 对应的指纹（用于按平台跳过判断）
   Future<String?> getDedupeKeyFingerprint(String dedupeKey) async {
     final data = await _load();
-    final entry = (data['dedupeKeys'] as Map?)?[dedupeKey];
-    if (entry == null) return null;
-    return (entry as Map)['fingerprint'] as String?;
+    final dedupeKeys = (data['dedupeKeys'] as Map?) ?? {};
+    final matchedKey = _matchDedupeKey(dedupeKeys, dedupeKey);
+    if (matchedKey == null) return null;
+    final entry = dedupeKeys[matchedKey];
+    if (entry is! Map) return null;
+    return entry['fingerprint'] as String?;
+  }
+
+  /// Matches a canonical dedupe key against stored keys.
+  ///
+  /// Legacy keys append the old `_timeSeconds` suffix and may embed an
+  /// un-normalized start time (OneLap local ISO instead of UTC), so keys are
+  /// compared by normalized start time plus distance rather than by string.
+  static String? _matchDedupeKey(Map dedupeKeys, String dedupeKey) {
+    if (dedupeKeys.containsKey(dedupeKey)) {
+      return dedupeKey;
+    }
+    final (String, String)? candidates = _splitDedupeKey(dedupeKey);
+    if (candidates == null) {
+      return null;
+    }
+    for (final key in dedupeKeys.keys) {
+      final (String, String)? stored = _splitDedupeKey('$key');
+      if (stored == null) {
+        continue;
+      }
+      if (stored.$1 == candidates.$1 && stored.$2 == candidates.$2) {
+        return '$key';
+      }
+    }
+    return null;
+  }
+
+  /// Splits `{startTime}_{distance}[_{duration}]` into normalized start time
+  /// and distance. Returns null for keys that do not follow the format.
+  static (String, String)? _splitDedupeKey(String key) {
+    final List<String> parts = key.split('_');
+    if (parts.length < 2 || parts[0].isEmpty) {
+      return null;
+    }
+    return (normalizeDedupeStartTime(parts[0]), parts[1]);
   }
 
   /// 同步成功后保存 dedupeKey（防止指纹变化导致的重复上传）。

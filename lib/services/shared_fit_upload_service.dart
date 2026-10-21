@@ -416,7 +416,7 @@ class SharedFitUploadService {
     for (final FitUploadPlatformResult result in successfulResults) {
       await _stateStore.markPlatformSynced(
         fingerprint,
-        result.platform.name,
+        _mapSyncPlatform(result.platform).storageKey,
         result.remoteActivityId,
       );
     }
@@ -439,11 +439,10 @@ class SharedFitUploadService {
       return null;
     }
 
-    final double? distanceM = sessionMeta.distanceM;
-    final String distanceValue = distanceM != null
-        ? '${distanceM.round()}'
-        : 'na';
-    return '${startTime}_$distanceValue';
+    return buildDedupeKey(
+      startTime: startTime,
+      distanceM: sessionMeta.distanceM,
+    );
   }
 
   Future<String> _buildHistoryFingerprint(File file, String startTime) async {
