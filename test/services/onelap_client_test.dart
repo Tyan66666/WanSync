@@ -212,6 +212,82 @@ void main() {
       },
     );
 
+    test('downloads bare OTM fileKey through fit_content fallback', () async {
+      const String bareFileKey = 'ONELAP_677767-2026-10-18-20-33-08.st';
+      final String otmFitContentUrl =
+          'https://otm.onelap.cn/api/otm/ride_record/analysis/fit_content/'
+          '${base64Encode(utf8.encode(bareFileKey))}';
+      final List<int> fitBytes = _validFitBytes(<int>[1, 2, 3, 4]);
+      final List<String> requestedUrls = <String>[];
+
+      final Dio dio = Dio();
+      dio.httpClientAdapter = _FakeHttpClientAdapter((options) async {
+        final String url = options.uri.toString();
+        requestedUrls.add(url);
+        if (url == 'http://example.com/api/login') {
+          return ResponseBody.fromString(
+            jsonEncode({
+              'code': 200,
+              'data': {
+                'token': 'bare-token-123',
+                'refresh_token': 'bare-refresh-456',
+              },
+            }),
+            200,
+            headers: <String, List<String>>{
+              Headers.contentTypeHeader: <String>['application/json'],
+            },
+          );
+        }
+        if (url == otmFitContentUrl) {
+          return ResponseBody.fromBytes(
+            fitBytes,
+            HttpStatus.ok,
+            headers: <String, List<String>>{
+              Headers.contentTypeHeader: <String>['application/octet-stream'],
+            },
+          );
+        }
+        return ResponseBody.fromString('not found', HttpStatus.notFound);
+      });
+      final Directory outputDir = await Directory.systemTemp.createTemp(
+        'onelap-client-bare-filekey-',
+      );
+
+      addTearDown(() async {
+        if (await outputDir.exists()) {
+          await outputDir.delete(recursive: true);
+        }
+      });
+
+      final OneLapClient client = OneLapClient(
+        baseUrl: 'http://example.com',
+        username: 'unused',
+        password: 'unused',
+        dio: dio,
+      );
+
+      final File downloaded = await client.downloadFit(
+        'ONELAP_677767-2026-10-18-20-33-08.st',
+        'demo.fit',
+        outputDir,
+        activity: const OneLapActivity(
+          activityId: '6ad4bc85a28dc842fe23e338',
+          startTime: '2026-10-18 19:02:33',
+          fitUrl: 'ONELAP_677767-2026-10-18-20-33-08.st',
+          recordKey: 'fileKey:ONELAP_677767-2026-10-18-20-33-08.st',
+          sourceFilename: 'demo.fit',
+          rawFitUrl: 'ONELAP_677767-2026-10-18-20-33-08.st',
+          rawDurl:
+              'http://fits.rfsvr.net/ONELAP_677767-2026-10-18-20-33-08.st?e=1&token=abc',
+          rawFileKey: 'ONELAP_677767-2026-10-18-20-33-08.st',
+        ),
+      );
+
+      expect(requestedUrls, contains(otmFitContentUrl));
+      expect(await downloaded.readAsBytes(), fitBytes);
+    });
+
     test(
       'still accepts OneLap success code 0 when token fields are present',
       () async {

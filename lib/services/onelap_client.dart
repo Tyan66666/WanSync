@@ -724,6 +724,7 @@ class OneLapClient {
       if (value.isEmpty) continue;
       if (value.startsWith('geo/')) return value;
       if (_isOtmMatchIdentifier(value)) return value;
+      if (_isBareOnelapLogFilename(value)) return value;
       final Uri? uri = Uri.tryParse(value);
       if (uri != null && uri.path.startsWith('/geo/')) {
         return uri.path.replaceFirst(RegExp(r'^/'), '');
@@ -747,6 +748,23 @@ class OneLapClient {
     if (value.startsWith('/')) return false;
 
     return true;
+  }
+
+  /// OneLap 新版记录可能把 fileKey 存成裸文件名（如
+  /// `ONELAP_677767-2026-10-18-20-33-08.st`），不带 `geo/` 前缀。
+  /// `fit_content/{base64(fileKey)}` 同样能把它转换成 FIT，所以这里接受
+  /// 这种新的 ONELAP_ 前缀文件名；但必须排除完整 URL（例如签名后
+  /// 的 durl）和无法识别的标识，避免把任意字符串当路径做 base64 编码。
+  bool _isBareOnelapLogFilename(String value) {
+    if (value.contains('/') || value.contains('\\')) return false;
+    if (value.contains('?') || value.contains('#')) return false;
+
+    final Uri? uri = Uri.tryParse(value);
+    if (uri != null && uri.hasScheme) return false;
+
+    return RegExp(
+      r'^ONELAP_\d+-\d{4}-\d{2}-\d{2}-\d{2}-\d{2}-\d{2}\.(?:st|fit)$',
+    ).hasMatch(value);
   }
 
   Future<String> _fetchOtmToken() async {
