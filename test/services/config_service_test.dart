@@ -118,8 +118,91 @@ void main() {
       expect(settings[SettingsService.keyStravaUploadMode], 'web');
       expect(settings[SettingsService.keyLookbackDays], '10');
       expect(settings[SettingsService.keyGcjCorrectionEnabled], 'true');
+      expect(settings[SettingsService.keyGcjCorrectionStrava], 'true');
+      expect(settings[SettingsService.keyGcjCorrectionXingzhe], 'false');
+      expect(settings[SettingsService.keyGcjCorrectionIntervalsIcu], 'false');
+      expect(settings[SettingsService.keyGcjCorrectionOutbase], 'false');
       expect(settings[SettingsService.keyUploadToXingzhe], 'true');
     });
+
+    test('exportConfig writes per-platform GCJ correction switches', () async {
+      await settingsService.saveSettings({
+        SettingsService.keyGcjCorrectionStrava: 'true',
+        SettingsService.keyGcjCorrectionXingzhe: 'false',
+        SettingsService.keyGcjCorrectionIntervalsIcu: 'true',
+        SettingsService.keyGcjCorrectionOutbase: 'true',
+      });
+
+      final jsonStr = await configService.exportConfig(appVersion: '1.0.0');
+      final json = jsonDecode(jsonStr) as Map<String, dynamic>;
+      final sync =
+          (json['settings'] as Map<String, dynamic>)['sync']
+              as Map<String, dynamic>;
+      final gcj = sync['gcjCorrection'] as Map<String, dynamic>;
+
+      expect(gcj['strava'], isTrue);
+      expect(gcj['xingzhe'], isFalse);
+      expect(gcj['intervalsIcu'], isTrue);
+      expect(gcj['outbase'], isTrue);
+      // Legacy flag mirrors Strava for older clients.
+      expect(sync['gcjCorrectionEnabled'], isTrue);
+    });
+
+    test(
+      'importConfig merges a partial GCJ map with the legacy Strava flag',
+      () async {
+        final configJson = jsonEncode({
+          'version': 1,
+          'appVersion': '1.0.0',
+          'exportedAt': '2026-01-01T00:00:00.000Z',
+          'settings': {
+            'sync': {
+              'gcjCorrectionEnabled': true,
+              'gcjCorrection': {'xingzhe': true},
+            },
+          },
+        });
+
+        await configService.importConfig(configJson);
+
+        final settings = await settingsService.loadSettings();
+        expect(settings[SettingsService.keyGcjCorrectionStrava], 'true');
+        expect(settings[SettingsService.keyGcjCorrectionXingzhe], 'true');
+        expect(settings[SettingsService.keyGcjCorrectionIntervalsIcu], 'false');
+        expect(settings[SettingsService.keyGcjCorrectionOutbase], 'false');
+      },
+    );
+
+    test(
+      'importConfig restores per-platform GCJ correction switches',
+      () async {
+        final configJson = jsonEncode({
+          'version': 1,
+          'appVersion': '1.0.0',
+          'exportedAt': '2026-01-01T00:00:00.000Z',
+          'settings': {
+            'sync': {
+              'gcjCorrectionEnabled': false,
+              'gcjCorrection': {
+                'strava': false,
+                'xingzhe': true,
+                'intervalsIcu': false,
+                'outbase': true,
+              },
+            },
+          },
+        });
+
+        await configService.importConfig(configJson);
+
+        final settings = await settingsService.loadSettings();
+        expect(settings[SettingsService.keyGcjCorrectionStrava], 'false');
+        expect(settings[SettingsService.keyGcjCorrectionXingzhe], 'true');
+        expect(settings[SettingsService.keyGcjCorrectionIntervalsIcu], 'false');
+        expect(settings[SettingsService.keyGcjCorrectionOutbase], 'true');
+        expect(settings[SettingsService.keyGcjCorrectionEnabled], 'false');
+      },
+    );
 
     test('importConfig throws on invalid JSON', () {
       expect(

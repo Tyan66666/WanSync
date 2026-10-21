@@ -53,7 +53,23 @@ class SettingsService {
   static const keyXingzhePassword = 'XINGZHE_PASSWORD';
   static const keyXingzheSessionId = 'XINGZHE_SESSION_ID';
   static const keyLookbackDays = 'LOOKBACK_DAYS';
+
+  /// Legacy switch, applied to Strava only on builds before per-platform
+  /// correction. Kept for backward-compatible settings/config migration.
   static const keyGcjCorrectionEnabled = 'GCJ_CORRECTION_ENABLED';
+  static const keyGcjCorrectionStrava = 'GCJ_CORRECTION_STRAVA';
+  static const keyGcjCorrectionXingzhe = 'GCJ_CORRECTION_XINGZHE';
+  static const keyGcjCorrectionIntervalsIcu = 'GCJ_CORRECTION_INTERVALSUCU';
+  static const keyGcjCorrectionOutbase = 'GCJ_CORRECTION_OUTBASE';
+
+  /// Per-platform GCJ-02 → WGS-84 correction switches, in UI order.
+  static const gcjCorrectionKeys = [
+    keyGcjCorrectionStrava,
+    keyGcjCorrectionXingzhe,
+    keyGcjCorrectionIntervalsIcu,
+    keyGcjCorrectionOutbase,
+  ];
+
   static const keyUploadToStrava = 'UPLOAD_TO_STRAVA';
   static const keyUploadToXingzhe = 'UPLOAD_TO_XINGZHE';
   static const keyIntervalsIcuAthleteId = 'INTERVALS_ICU_ATHLETE_ID';
@@ -78,6 +94,10 @@ class SettingsService {
     keyXingzheSessionId,
     keyLookbackDays,
     keyGcjCorrectionEnabled,
+    keyGcjCorrectionStrava,
+    keyGcjCorrectionXingzhe,
+    keyGcjCorrectionIntervalsIcu,
+    keyGcjCorrectionOutbase,
     keyUploadToStrava,
     keyUploadToXingzhe,
     keyIntervalsIcuAthleteId,

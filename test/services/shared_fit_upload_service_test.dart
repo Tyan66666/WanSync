@@ -134,12 +134,20 @@ class _FakeStateStore extends StateStore {
 Map<String, String> _settings({
   String uploadToStrava = 'true',
   String uploadToXingzhe = 'false',
-  String gcjCorrectionEnabled = 'false',
+  String gcjCorrectionEnabled = '',
+  String gcjCorrectionStrava = '',
+  String gcjCorrectionXingzhe = '',
+  String gcjCorrectionIntervalsIcu = '',
+  String gcjCorrectionOutbase = '',
 }) {
   return <String, String>{
     SettingsService.keyUploadToStrava: uploadToStrava,
     SettingsService.keyUploadToXingzhe: uploadToXingzhe,
     SettingsService.keyGcjCorrectionEnabled: gcjCorrectionEnabled,
+    SettingsService.keyGcjCorrectionStrava: gcjCorrectionStrava,
+    SettingsService.keyGcjCorrectionXingzhe: gcjCorrectionXingzhe,
+    SettingsService.keyGcjCorrectionIntervalsIcu: gcjCorrectionIntervalsIcu,
+    SettingsService.keyGcjCorrectionOutbase: gcjCorrectionOutbase,
     SettingsService.keyStravaClientId: 'client-id',
     SettingsService.keyStravaClientSecret: 'client-secret',
     SettingsService.keyStravaRefreshToken: 'refresh-token',
@@ -613,6 +621,213 @@ void main() {
     );
 
     test(
+      'Xingzhe keeps the original file when correction is enabled only for Strava',
+      () async {
+        final Directory tempDir = await Directory.systemTemp.createTemp(
+          'shared-fit-upload-rewrite-xingzhe-original-',
+        );
+        final File fitFile = await _createFitFile(tempDir);
+        final File rewrittenFile = await _createFitFile(
+          tempDir,
+          name: 'rewritten.fit',
+        );
+
+        addTearDown(() async {
+          if (await tempDir.exists()) {
+            await tempDir.delete(recursive: true);
+          }
+        });
+
+        final _FakeFitCoordinateRewriteService rewriteService =
+            _FakeFitCoordinateRewriteService(rewriteFile: rewrittenFile);
+        final _FakeFitUploadCoordinator coordinator = _FakeFitUploadCoordinator(
+          plan: FitUploadPlan(
+            targets: <FitUploadPlatform>[
+              FitUploadPlatform.strava,
+              FitUploadPlatform.xingzhe,
+            ],
+            hasMissingConfiguration: false,
+            targetLabel: 'Strava 和 行者',
+          ),
+          result: FitUploadCoordinatorResult(
+            status: FitUploadCoordinatorStatus.success,
+            platformResults: <FitUploadPlatformResult>[
+              const FitUploadPlatformResult(
+                platform: FitUploadPlatform.strava,
+                status: FitUploadPlatformStatus.success,
+              ),
+              const FitUploadPlatformResult(
+                platform: FitUploadPlatform.xingzhe,
+                status: FitUploadPlatformStatus.success,
+              ),
+            ],
+          ),
+        );
+        final SharedFitUploadService service = SharedFitUploadService(
+          loadSettings: () async => _settings(
+            uploadToStrava: 'true',
+            uploadToXingzhe: 'true',
+            gcjCorrectionStrava: 'true',
+          ),
+          rewriteService: rewriteService,
+          coordinator: coordinator,
+        );
+
+        final SharedFitDraft draft = SharedFitDraft(
+          localFilePath: fitFile.path,
+          displayName: 'activity.fit',
+        );
+
+        final SharedFitUploadResult result = await service.uploadDraft(draft);
+
+        expect(result.status, SharedFitUploadStatus.success);
+        expect(
+          coordinator.uploadedFileOverrides[FitUploadPlatform.strava]?.path,
+          rewrittenFile.path,
+        );
+        expect(
+          coordinator.uploadedFileOverrides[FitUploadPlatform.xingzhe]?.path,
+          fitFile.path,
+        );
+      },
+    );
+
+    test(
+      'rewrites for Xingzhe when correction is enabled for Xingzhe',
+      () async {
+        final Directory tempDir = await Directory.systemTemp.createTemp(
+          'shared-fit-upload-rewrite-xingzhe-enabled-',
+        );
+        final File fitFile = await _createFitFile(tempDir);
+        final File rewrittenFile = await _createFitFile(
+          tempDir,
+          name: 'rewritten.fit',
+        );
+
+        addTearDown(() async {
+          if (await tempDir.exists()) {
+            await tempDir.delete(recursive: true);
+          }
+        });
+
+        final _FakeFitCoordinateRewriteService rewriteService =
+            _FakeFitCoordinateRewriteService(rewriteFile: rewrittenFile);
+        final _FakeFitUploadCoordinator coordinator = _FakeFitUploadCoordinator(
+          plan: FitUploadPlan(
+            targets: <FitUploadPlatform>[FitUploadPlatform.xingzhe],
+            hasMissingConfiguration: false,
+            targetLabel: '行者',
+          ),
+          result: FitUploadCoordinatorResult(
+            status: FitUploadCoordinatorStatus.success,
+            platformResults: <FitUploadPlatformResult>[
+              const FitUploadPlatformResult(
+                platform: FitUploadPlatform.xingzhe,
+                status: FitUploadPlatformStatus.success,
+              ),
+            ],
+          ),
+        );
+        final SharedFitUploadService service = SharedFitUploadService(
+          loadSettings: () async => _settings(
+            uploadToStrava: 'false',
+            uploadToXingzhe: 'true',
+            gcjCorrectionXingzhe: 'true',
+          ),
+          rewriteService: rewriteService,
+          coordinator: coordinator,
+        );
+
+        final SharedFitDraft draft = SharedFitDraft(
+          localFilePath: fitFile.path,
+          displayName: 'activity.fit',
+        );
+
+        final SharedFitUploadResult result = await service.uploadDraft(draft);
+
+        expect(result.status, SharedFitUploadStatus.success);
+        expect(rewriteService.receivedFile?.path, fitFile.path);
+        expect(
+          coordinator.uploadedFileOverrides[FitUploadPlatform.xingzhe]?.path,
+          rewrittenFile.path,
+        );
+      },
+    );
+
+    test(
+      'rewrite failure only fails the platforms that requested correction',
+      () async {
+        final Directory tempDir = await Directory.systemTemp.createTemp(
+          'shared-fit-upload-rewrite-xingzhe-failure-',
+        );
+        final File fitFile = await _createFitFile(tempDir);
+
+        addTearDown(() async {
+          if (await tempDir.exists()) {
+            await tempDir.delete(recursive: true);
+          }
+        });
+
+        final _FakeFitCoordinateRewriteService rewriteService =
+            _FakeFitCoordinateRewriteService(
+              error: Exception('rewrite failed'),
+            );
+        final _FakeFitUploadCoordinator coordinator = _FakeFitUploadCoordinator(
+          plan: FitUploadPlan(
+            targets: <FitUploadPlatform>[
+              FitUploadPlatform.strava,
+              FitUploadPlatform.xingzhe,
+            ],
+            hasMissingConfiguration: false,
+            targetLabel: 'Strava 和 行者',
+          ),
+          result: FitUploadCoordinatorResult(
+            status: FitUploadCoordinatorStatus.success,
+            platformResults: <FitUploadPlatformResult>[
+              const FitUploadPlatformResult(
+                platform: FitUploadPlatform.strava,
+                status: FitUploadPlatformStatus.success,
+              ),
+            ],
+          ),
+        );
+        final SharedFitUploadService service = SharedFitUploadService(
+          loadSettings: () async => _settings(
+            uploadToStrava: 'true',
+            uploadToXingzhe: 'true',
+            gcjCorrectionXingzhe: 'true',
+          ),
+          rewriteService: rewriteService,
+          coordinator: coordinator,
+        );
+
+        final SharedFitDraft draft = SharedFitDraft(
+          localFilePath: fitFile.path,
+          displayName: 'activity.fit',
+        );
+
+        final SharedFitUploadResult result = await service.uploadDraft(draft);
+
+        expect(result.status, SharedFitUploadStatus.partialSuccess);
+        expect(
+          result.message,
+          '已上传到 Strava；'
+          '行者上传失败：FIT coordinate rewrite failed: rewrite failed',
+        );
+        expect(coordinator.uploadFileCalls, 1);
+        expect(coordinator.uploadedFile?.path, fitFile.path);
+        expect(
+          coordinator.uploadedSettings?[SettingsService.keyUploadToStrava],
+          'true',
+        );
+        expect(
+          coordinator.uploadedSettings?[SettingsService.keyUploadToXingzhe],
+          'false',
+        );
+      },
+    );
+
+    test(
       'deletes rewritten temp files after the delegated upload attempt',
       () async {
         final Directory tempDir = await Directory.systemTemp.createTemp(
@@ -730,6 +945,7 @@ void main() {
             ],
           ),
         );
+        final _FakeStateStore stateStore = _FakeStateStore();
         final SharedFitUploadService service = SharedFitUploadService(
           loadSettings: () async => _settings(
             uploadToStrava: 'true',
@@ -738,6 +954,7 @@ void main() {
           ),
           rewriteService: rewriteService,
           coordinator: coordinator,
+          stateStore: stateStore,
         );
 
         final SharedFitDraft draft = SharedFitDraft(
@@ -763,6 +980,12 @@ void main() {
           coordinator.uploadedSettings?[SettingsService.keyUploadToXingzhe],
           'true',
         );
+
+        final SyncRecord historyRecord = stateStore.savedBatches.single.single;
+        expect(historyRecord.uploadedToStrava, isFalse);
+        expect(historyRecord.uploadedToXingzhe, isTrue);
+        expect(historyRecord.uploadedToIntervalsIcu, isFalse);
+        expect(historyRecord.uploadedToOutbase, isFalse);
       },
     );
 

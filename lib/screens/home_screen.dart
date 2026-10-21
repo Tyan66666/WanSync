@@ -8,6 +8,7 @@ import '../models/sync_result_banner.dart';
 import '../models/sync_summary.dart';
 import '../services/onelap_client.dart';
 import '../services/fit_coordinate_rewrite_service.dart';
+import '../services/gcj_correction_settings.dart';
 import '../services/settings_service.dart';
 import '../services/sync_failure_formatter.dart';
 import '../services/state_store.dart';
@@ -279,8 +280,8 @@ class _HomeScreenState extends State<HomeScreen> {
           settings[SettingsService.keyXingzheUsername] ?? '';
       final xingzhePassword =
           settings[SettingsService.keyXingzhePassword] ?? '';
-      final bool gcjCorrectionEnabled =
-          settings[SettingsService.keyGcjCorrectionEnabled] == 'true';
+      final GcjCorrectionSettings gcjCorrection =
+          GcjCorrectionSettings.fromSettings(settings);
       final bool uploadToStrava =
           settings[SettingsService.keyUploadToStrava] != 'false';
       final bool uploadToXingzhe =
@@ -428,7 +429,7 @@ class _HomeScreenState extends State<HomeScreen> {
         intervalsIcuClient: intervalsIcu,
         outbaseClient: outbase,
         stateStore: _stateStore,
-        gcjCorrectionEnabled: gcjCorrectionEnabled,
+        gcjCorrection: gcjCorrection,
         uploadToStrava: uploadToStrava,
         uploadToXingzhe: uploadToXingzhe,
         uploadToIntervalsIcu: uploadToIntervalsIcu,

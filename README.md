@@ -14,7 +14,7 @@
 - 支持从系统分享或“打开方式”接收 FIT 文件后上传到 Strava / Import FIT files from system share or open-in flows, then upload to Strava
 - 支持上传到 Strava、行者、Intervals.icu 和 Outbase，可单独开启或同时开启 / Upload to Strava, Xingzhe, Intervals.icu, and Outbase, either individually or together
 - 各平台独立去重，避免重复上传 / Per-platform deduplication to avoid duplicate uploads
-- 可选在 Strava 上传前将 GCJ-02 轨迹转换为 WGS84，仅对 Strava 生效 / Optionally convert GCJ-02 tracks to WGS84 before Strava upload; applies to Strava only
+- 可选在上传前将 GCJ-02 轨迹转换为 WGS84，四个平台可分别开启 / Optionally convert GCJ-02 tracks to WGS84 before upload, configurable per platform
 - 设置同步天数（默认 3 天）/ Configurable lookback days (default 3)
 - 内置 Strava OAuth 授权，无需手动填写 Token / Built-in Strava OAuth flow
 - 首页展示最近同步结果 Banner，可展开查看详情 / Recent sync result banners on the home screen with expandable details
@@ -93,9 +93,9 @@ Strava 上传支持 API 和网页两种模式：API 模式需要配置 Client ID
 
 *Strava upload supports API and Web modes: API mode requires Client ID/Secret, Web mode only needs a Strava account login. Outbase requires WebView login to obtain a sessionId.*
 
-如果你的来源轨迹使用 GCJ-02，或者导入到 Strava 后路线明显偏移，可以在设置中开启「Strava 上传前将 GCJ-02 转为 WGS84」。该选项仅对 Strava 上传生效；行者、Intervals.icu 和 Outbase 始终上传原始 FIT 文件。
+如果你的来源轨迹使用 GCJ-02，或者导入到目标平台后路线明显偏移，可以在设置中按平台开启坐标纠偏（「Strava / 行者 / Intervals.icu / Outbase 上传前将 GCJ-02 转为 WGS84」）。四个平台可分别开启：开启的平台上传转换后的文件，未开启的平台上传原始 FIT 文件。
 
-*If your source track uses GCJ-02, or the uploaded route appears visibly offset in Strava, enable `Strava 上传前将 GCJ-02 转为 WGS84` in Settings. This option applies to Strava uploads only; Xingzhe, Intervals.icu, and Outbase always receive the original FIT file.*
+*If your source track uses GCJ-02, or the uploaded route appears visibly offset on a destination platform, enable the per-platform coordinate correction in Settings (`Strava / Xingzhe / Intervals.icu / Outbase 上传前将 GCJ-02 转为 WGS84`). Each of the four platforms can be enabled independently: enabled platforms receive the converted file, while the others receive the original FIT file.*
 
 ### 通过系统分享导入 FIT / Import FIT via System Share
 
