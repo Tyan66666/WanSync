@@ -92,9 +92,12 @@ class SyncEngine {
     final downloadDir = Directory('${cacheDir.path}/fit_downloads');
     if (!downloadDir.existsSync()) downloadDir.createSync(recursive: true);
 
-    final List<OneLapActivity> activities;
+    final OneLapActivityQuery activityQuery;
     try {
-      activities = await oneLapClient.listFitActivities(since: since);
+      activityQuery = await oneLapClient.fetchActivities(
+        since: since,
+        until: DateTime.now(),
+      );
     } on OnelapRiskControlError {
       return const SyncSummary(
         fetched: 0,
@@ -104,6 +107,7 @@ class SyncEngine {
         abortedReason: 'risk-control',
       );
     }
+    final List<OneLapActivity> activities = activityQuery.activities;
 
     var progress = SyncProgress(
       totalActivities: activities.length,
@@ -709,6 +713,11 @@ class SyncEngine {
       success: success,
       failed: failed,
       failureReasons: failureReasons,
+      serverReturned: activityQuery.serverReturned,
+      outOfRange: activityQuery.outOfRange,
+      invalidRecords: activityQuery.invalid,
+      rangeStart: activityQuery.rangeStart,
+      rangeEnd: activityQuery.rangeEnd,
       xingzheSuccess: xingzheSuccess,
       xingzheFailed: xingzheFailed,
       xingzheDeduped: xingzheDeduped,

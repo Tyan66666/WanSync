@@ -629,7 +629,12 @@ void main() {
           ),
         );
         expect(otmAuthHeaders, everyElement('otm-token-123'));
-        expect(requestBodies, <String>['{"page":1,"limit":50}']);
+        final Map<String, dynamic> listBody =
+            jsonDecode(requestBodies.single) as Map<String, dynamic>;
+        expect(listBody['page'], 1);
+        expect(listBody['limit'], 50);
+        expect(listBody['start_date'], '2026-03-27');
+        expect(listBody['end_date'], isNotEmpty);
         expect(activities.single.activityId, '321');
         expect(activities.single.recordId, '321');
         expect(activities.single.startTime, '2026-03-28T10:00:00');
@@ -969,7 +974,12 @@ void main() {
           limit: 2,
         );
 
-        expect(requestBodies, <String>['{"page":1,"limit":2}']);
+        expect(requestBodies, hasLength(1));
+        final Map<String, dynamic> listBody =
+            jsonDecode(requestBodies.single) as Map<String, dynamic>;
+        expect(listBody['page'], 1);
+        expect(listBody['limit'], 2);
+        expect(listBody['start_date'], '2026-03-27');
         expect(activities, hasLength(2));
         expect(
           activities.map((OneLapActivity activity) => activity.activityId),
@@ -2084,6 +2094,196 @@ void main() {
       expect(activities.single.distanceKm, 42.5);
       expect(activities.single.timeSeconds, 5400);
     });
+  });
+
+  group('OneLapClient.fetchActivities', () {
+    ResponseBody jsonBody(Object payload) => ResponseBody.fromString(
+      jsonEncode(payload),
+      200,
+      headers: <String, List<String>>{
+        Headers.contentTypeHeader: <String>['application/json'],
+      },
+    );
+
+    OneLapClient buildClient(
+      Future<ResponseBody> Function(RequestOptions options) handler,
+    ) {
+      final Dio dio = Dio();
+      dio.httpClientAdapter = _FakeHttpClientAdapter(handler);
+      return OneLapClient(
+        baseUrl: 'http://example.com',
+        username: 'unused',
+        password: 'unused',
+        dio: dio,
+      );
+    }
+
+    ResponseBody loginBody() => jsonBody({
+      'code': 200,
+      'data': {'token': 'otm-token', 'refresh_token': 'refresh-token'},
+    });
+
+    ResponseBody detailBody() => jsonBody({
+      'code': 200,
+      'data': {
+        'ridingRecord': {'fileKey': 'geo/20261024/ride.fit'},
+      },
+    });
+
+    test(
+      'sends the requested date range so the server scopes the query',
+      () async {
+        final List<Map<String, dynamic>> bodies = <Map<String, dynamic>>[];
+
+        final OneLapClient client = buildClient((options) async {
+          final String url = options.uri.toString();
+          if (url == 'http://example.com/api/login') return loginBody();
+          if (url == 'https://otm.onelap.cn/api/otm/ride_record/list') {
+            bodies.add(
+              Map<String, dynamic>.from(options.data as Map<dynamic, dynamic>),
+            );
+            return jsonBody({
+              'code': 200,
+              'data': {'list': <dynamic>[]},
+            });
+          }
+          return ResponseBody.fromString('not found', 404);
+        });
+
+        final OneLapActivityQuery query = await client.fetchActivities(
+          since: DateTime(2026, 10, 21),
+          until: DateTime(2026, 10, 24),
+        );
+
+        expect(query.serverReturned, 0);
+        expect(query.rangeStart, '2026-10-21');
+        expect(query.rangeEnd, '2026-10-24');
+        expect(bodies.single['start_date'], '2026-10-21');
+        expect(bodies.single['end_date'], '2026-10-24');
+        expect(bodies.single['page'], 1);
+      },
+    );
+
+    test('parses epoch start times in seconds and milliseconds', () async {
+      // 1792811623 == 2026-10-24 11:13:43 北京时间。
+      const int epochSeconds = 1792811623;
+
+      final OneLapClient client = buildClient((options) async {
+        final String url = options.uri.toString();
+        if (url == 'http://example.com/api/login') return loginBody();
+        if (url == 'https://otm.onelap.cn/api/otm/ride_record/list') {
+          return jsonBody({
+            'code': 200,
+            'data': {
+              'list': [
+                {'id': 'seconds', 'start_riding_time': epochSeconds},
+                {'id': 'millis', 'start_riding_time': epochSeconds * 1000},
+              ],
+            },
+          });
+        }
+        if (url.contains('/analysis/')) return detailBody();
+        return ResponseBody.fromString('not found', 404);
+      });
+
+      final OneLapActivityQuery query = await client.fetchActivities(
+        since: DateTime(2026, 10, 21),
+      );
+
+      expect(query.invalid, 0);
+      expect(
+        query.activities.map((OneLapActivity a) => a.startTime).toList(),
+        <String>['2026-10-24T11:13:43', '2026-10-24T11:13:43'],
+      );
+    });
+
+    test(
+      'counts unusable and out-of-range records instead of dropping them silently',
+      () async {
+        final OneLapClient client = buildClient((options) async {
+          final String url = options.uri.toString();
+          if (url == 'http://example.com/api/login') return loginBody();
+          if (url == 'https://otm.onelap.cn/api/otm/ride_record/list') {
+            return jsonBody({
+              'code': 200,
+              'data': {
+                'list': [
+                  {'id': 'keep', 'start_riding_time': '2026-10-24 11:13:43'},
+                  {'id': 'placeholder', 'created_at': '1970-01-01 08:00:00'},
+                  {'id': 'too-old', 'start_riding_time': '2026-10-01 08:00:00'},
+                  {'id': '', 'start_riding_time': '2026-10-24 09:00:00'},
+                ],
+              },
+            });
+          }
+          if (url.contains('/analysis/')) return detailBody();
+          return ResponseBody.fromString('not found', 404);
+        });
+
+        final OneLapActivityQuery query = await client.fetchActivities(
+          since: DateTime(2026, 10, 21),
+        );
+
+        expect(query.serverReturned, 4);
+        expect(query.activities.single.activityId, 'keep');
+        expect(query.invalid, 2);
+        expect(query.outOfRange, 1);
+        expect(query.skipped, 3);
+      },
+    );
+
+    test(
+      'follows server pagination when the range holds more than one page',
+      () async {
+        final List<Map<String, dynamic>> bodies = <Map<String, dynamic>>[];
+        int listCalls = 0;
+
+        final OneLapClient client = buildClient((options) async {
+          final String url = options.uri.toString();
+          if (url == 'http://example.com/api/login') return loginBody();
+          if (url == 'https://otm.onelap.cn/api/otm/ride_record/list') {
+            listCalls++;
+            bodies.add(
+              Map<String, dynamic>.from(options.data as Map<dynamic, dynamic>),
+            );
+            if (listCalls == 1) {
+              return jsonBody({
+                'code': 200,
+                'data': {
+                  'list': [
+                    {'id': 'a', 'start_riding_time': '2026-10-24 11:13:43'},
+                    {'id': 'b', 'start_riding_time': '2026-10-23 11:13:43'},
+                  ],
+                  'pagination': {'has_more': true},
+                },
+              });
+            }
+            return jsonBody({
+              'code': 200,
+              'data': {
+                'list': [
+                  {'id': 'c', 'start_riding_time': '2026-10-22 11:13:43'},
+                ],
+                'pagination': {'has_more': false},
+              },
+            });
+          }
+          if (url.contains('/analysis/')) return detailBody();
+          return ResponseBody.fromString('not found', 404);
+        });
+
+        final OneLapActivityQuery query = await client.fetchActivities(
+          since: DateTime(2026, 10, 21),
+          limit: 5,
+        );
+
+        expect(query.pagesFetched, 2);
+        expect(query.activities, hasLength(3));
+        expect(bodies, hasLength(2));
+        expect(bodies[0]['page'], 1);
+        expect(bodies[1]['page'], 2);
+      },
+    );
   });
 
   group('OneLapClient.downloadFit', () {

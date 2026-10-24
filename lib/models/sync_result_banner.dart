@@ -12,6 +12,13 @@ class SyncResultBanner {
   final int success;
   final int failed;
 
+  // 取数诊断：区分「OneLap 没有记录」和「有记录但被过滤」
+  final int serverReturned;
+  final int outOfRange;
+  final int invalidRecords;
+  final String rangeStart;
+  final String rangeEnd;
+
   // 行者
   final int xingzheSuccess;
   final int xingzheFailed;
@@ -60,6 +67,11 @@ class SyncResultBanner {
     this.outbaseFailed = 0,
     this.outbaseDeduped = 0,
     this.outbaseFailures = const [],
+    this.serverReturned = 0,
+    this.outOfRange = 0,
+    this.invalidRecords = 0,
+    this.rangeStart = '',
+    this.rangeEnd = '',
   });
 
   factory SyncResultBanner.fromSyncSummary(SyncSummary s) {
@@ -72,6 +84,11 @@ class SyncResultBanner {
       pending: s.pending,
       success: s.success,
       failed: s.failed,
+      serverReturned: s.serverReturned,
+      outOfRange: s.outOfRange,
+      invalidRecords: s.invalidRecords,
+      rangeStart: s.rangeStart,
+      rangeEnd: s.rangeEnd,
       xingzheSuccess: s.xingzheSuccess,
       xingzheFailed: s.xingzheFailed,
       xingzheDeduped: s.xingzheDeduped,
@@ -99,6 +116,11 @@ class SyncResultBanner {
     'pending': pending,
     'success': success,
     'failed': failed,
+    'serverReturned': serverReturned,
+    'outOfRange': outOfRange,
+    'invalidRecords': invalidRecords,
+    'rangeStart': rangeStart,
+    'rangeEnd': rangeEnd,
     'xingzheSuccess': xingzheSuccess,
     'xingzheFailed': xingzheFailed,
     'xingzheDeduped': xingzheDeduped,
@@ -128,6 +150,11 @@ class SyncResultBanner {
       pending: json['pending'] as int? ?? 0,
       success: json['success'] as int? ?? 0,
       failed: json['failed'] as int? ?? 0,
+      serverReturned: json['serverReturned'] as int? ?? 0,
+      outOfRange: json['outOfRange'] as int? ?? 0,
+      invalidRecords: json['invalidRecords'] as int? ?? 0,
+      rangeStart: json['rangeStart'] as String? ?? '',
+      rangeEnd: json['rangeEnd'] as String? ?? '',
       xingzheSuccess: json['xingzheSuccess'] as int? ?? 0,
       xingzheFailed: json['xingzheFailed'] as int? ?? 0,
       xingzheDeduped: json['xingzheDeduped'] as int? ?? 0,
@@ -176,7 +203,17 @@ class SyncResultBanner {
   }
 
   /// 概览行文案
-  String get summaryLine => '共获取$fetched条，$deduped条已跳过，$pending条需同步';
+  String get summaryLine {
+    if (fetched == 0 && serverReturned > 0) {
+      return '共获取$serverReturned条，均未进入同步';
+    }
+    final StringBuffer buffer = StringBuffer(
+      '共获取$fetched条，$deduped条已跳过，$pending条需同步',
+    );
+    if (outOfRange > 0) buffer.write('，$outOfRange条早于范围');
+    if (invalidRecords > 0) buffer.write('，$invalidRecords条时间无效');
+    return buffer.toString();
+  }
 
   /// 简要时间标签（用于列表显示）
   String get timeLabel {
@@ -194,6 +231,11 @@ class SyncResultBanner {
     deduped: deduped,
     success: success,
     failed: failed,
+    serverReturned: serverReturned,
+    outOfRange: outOfRange,
+    invalidRecords: invalidRecords,
+    rangeStart: rangeStart,
+    rangeEnd: rangeEnd,
     failureReasons: [
       ...xingzheFailures.map((f) => '行者失败: ${f.displayText} ${f.error ?? ''}'),
       ...stravaFailures.map(
