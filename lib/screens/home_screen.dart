@@ -974,15 +974,37 @@ class _HomeScreenState extends State<HomeScreen> {
 
     final bool hasFailures = summary.failed > 0;
     final bool hasSuccess = summary.success > 0;
-    final bool nothingToSync = summary.success == 0 && summary.failed == 0;
 
+    // 「一条都没同步」的原因要分开说清楚：服务端没有记录 / 都同步过了 /
+    // 有记录但被过滤掉。以前这几种情况共用「没有要同步的啦」，用户无法判断
+    // 是 OneLap 还没回传数据，还是 App 漏了记录。
     String title;
+    String? hint;
     if (hasFailures) {
       title = '同步完成';
-    } else if (nothingToSync) {
-      title = '没有要同步的啦🎉';
-    } else {
+    } else if (hasSuccess) {
       title = '成功同步 ${summary.success} 个🎉';
+    } else if (summary.fetched == 0) {
+      title = 'OneLap 暂无该时段的记录';
+      final String range = summary.rangeStart.isEmpty
+          ? ''
+          : '（查询范围 ${summary.rangeStart} ~ ${summary.rangeEnd}）';
+      hint =
+          '服务端返回 0 条$range。\n'
+          '骑行结束后码表/手机回传 OneLap 有延迟，稍后重新同步即可。';
+    } else if (summary.deduped >= summary.fetched) {
+      title = '${summary.fetched} 条都已同步过';
+      hint =
+          '这些记录此前已经上传过，本次跳过，不会重复上传。\n'
+          '如果 Strava 侧没有，请到「同步历史」里查看对应记录的状态。';
+    } else {
+      title = '没有要同步的啦🎉';
+    }
+    if (summary.filteredOut > 0) {
+      final String detail =
+          '其中 ${summary.outOfRange} 条早于查询范围、'
+          '${summary.invalidRecords} 条无法解析开始时间';
+      hint = hint == null ? '$detail。' : '$hint\n$detail。';
     }
 
     showDialog<void>(
@@ -1019,6 +1041,10 @@ class _HomeScreenState extends State<HomeScreen> {
                     ),
                   ),
                 ),
+                const SizedBox(height: 16),
+              ],
+              if (hint != null) ...[
+                Text(hint, style: const TextStyle(fontSize: 13, height: 1.5)),
                 const SizedBox(height: 16),
               ],
               const Text('顺手给项目点个赞吧~'),

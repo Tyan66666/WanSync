@@ -24,11 +24,15 @@ class _FakeOneLapClient extends OneLapClient {
   final File downloadedFile;
 
   @override
-  Future<List<OneLapActivity>> listFitActivities({
+  Future<OneLapActivityQuery> fetchActivities({
     required DateTime since,
+    DateTime? until,
     int limit = 50,
   }) async {
-    return activities;
+    return OneLapActivityQuery(
+      activities: activities,
+      serverReturned: activities.length,
+    );
   }
 
   @override
@@ -298,10 +302,14 @@ class _CountingOneLapClient extends OneLapClient {
   int downloadCount = 0;
 
   @override
-  Future<List<OneLapActivity>> listFitActivities({
+  Future<OneLapActivityQuery> fetchActivities({
     required DateTime since,
+    DateTime? until,
     int limit = 50,
-  }) async => activities;
+  }) async => OneLapActivityQuery(
+    activities: activities,
+    serverReturned: activities.length,
+  );
 
   @override
   Future<File> downloadFit(

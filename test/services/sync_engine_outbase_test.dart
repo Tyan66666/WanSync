@@ -17,11 +17,15 @@ class _FakeOneLapClient extends OneLapClient {
   final File downloadedFile;
 
   @override
-  Future<List<OneLapActivity>> listFitActivities({
+  Future<OneLapActivityQuery> fetchActivities({
     required DateTime since,
+    DateTime? until,
     int limit = 50,
   }) async {
-    return activities;
+    return OneLapActivityQuery(
+      activities: activities,
+      serverReturned: activities.length,
+    );
   }
 
   @override

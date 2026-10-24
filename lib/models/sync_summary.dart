@@ -68,6 +68,22 @@ class SyncSummary {
   final int outbaseDeduped;
   final List<FailedActivitySummary> outbaseFailures;
 
+  /// 服务端实际返回的原始条数（跨页累计）。
+  ///
+  /// 用于区分「OneLap 确实没有记录」和「有记录但都被本地过滤掉了」——
+  /// 这两种情况以前共用同一句提示，用户无法分辨。
+  final int serverReturned;
+
+  /// 早于查询起始日被跳过的条数。
+  final int outOfRange;
+
+  /// 缺少 id 或无法解析起始时间被跳过的条数。
+  final int invalidRecords;
+
+  /// 本次查询的日期范围（`yyyy-MM-dd`）。
+  final String rangeStart;
+  final String rangeEnd;
+
   /// 本次同步运行时间戳（用于 banner 记录）
   final DateTime? syncedAt;
 
@@ -78,6 +94,11 @@ class SyncSummary {
     required this.failed,
     this.abortedReason,
     this.failureReasons = const [],
+    this.serverReturned = 0,
+    this.outOfRange = 0,
+    this.invalidRecords = 0,
+    this.rangeStart = '',
+    this.rangeEnd = '',
     this.xingzheSuccess = 0,
     this.xingzheFailed = 0,
     this.xingzheDeduped = 0,
@@ -103,10 +124,18 @@ class SyncSummary {
   /// 本次实际处理的记录数（成功+失败，不含 deduped 跳过）
   int get newCount => success + failed;
 
+  /// 服务端有数据、但没能进入同步的条数（范围外 + 无效时间）。
+  int get filteredOut => outOfRange + invalidRecords;
+
   /// 生成用于 HomeScreen banner 显示的汇总文案
   String get bannerTitle {
     if (abortedReason == 'risk-control') return '同步中止（风控）';
-    if (fetched == 0) return '本次未获取到记录';
-    return '已同步$success条${failed > 0 ? '，失败$failed条' : ''}';
+    if (fetched > 0) {
+      return '已同步$success条${failed > 0 ? '，失败$failed条' : ''}';
+    }
+    if (serverReturned > 0) {
+      return '服务端返回$serverReturned条，均未进入同步';
+    }
+    return '本次未获取到记录';
   }
 }

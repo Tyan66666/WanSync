@@ -31,8 +31,60 @@ class _RecordIdFitEmptyBodyError implements Exception {
   String toString() => 'recordId FIT endpoint returned an empty body';
 }
 
+/// 单页记录列表的解析结果。
+class _ActivitiesPage {
+  final List<dynamic> list;
+  final bool hasMore;
+
+  const _ActivitiesPage({required this.list, required this.hasMore});
+}
+
+/// 一次记录拉取的结果。
+///
+/// 除活动列表外还带回诊断计数，用于区分「服务端没有记录」和「本地被过滤掉」，
+/// 避免同步结果页把这两种情况混为一谈。
+class OneLapActivityQuery {
+  /// 需要同步的活动（已按日期范围过滤）。
+  final List<OneLapActivity> activities;
+
+  /// 服务端实际返回的原始条数（跨页累计）。
+  final int serverReturned;
+
+  /// 因早于起始日期被跳过的条数。
+  final int outOfRange;
+
+  /// 因缺少 id 或无法解析起始时间被跳过的条数。
+  final int invalid;
+
+  /// 实际请求的页数。
+  final int pagesFetched;
+
+  /// 查询的日期范围（`yyyy-MM-dd`），用于结果展示。
+  final String rangeStart;
+  final String rangeEnd;
+
+  const OneLapActivityQuery({
+    this.activities = const <OneLapActivity>[],
+    this.serverReturned = 0,
+    this.outOfRange = 0,
+    this.invalid = 0,
+    this.pagesFetched = 0,
+    this.rangeStart = '',
+    this.rangeEnd = '',
+  });
+
+  /// 服务端有数据但一条都没落到 [activities] 里的条数。
+  int get skipped => outOfRange + invalid;
+}
+
 class OneLapClient {
   static const String _recordIdFallbackBaseUrl = 'https://u.onelap.cn';
+
+  /// 服务端 `limit` 上限为 50，超出无效。
+  static const int _pageSize = 50;
+
+  /// 翻页次数上限，防止服务端分页信息异常时死循环。
+  static const int _maxPages = 10;
 
   final String baseUrl;
   final String username;
@@ -80,20 +132,65 @@ class OneLapClient {
     required DateTime since,
     int limit = 50,
   }) async {
-    final int effectiveLimit = limit < 0 ? 0 : (limit > 50 ? 50 : limit);
-    if (effectiveLimit == 0) {
-      return <OneLapActivity>[];
+    final OneLapActivityQuery query = await fetchActivities(
+      since: since,
+      limit: limit,
+    );
+    return query.activities;
+  }
+
+  /// 拉取 [since] 之后（含）的活动。
+  ///
+  /// 日期范围会直接下发给服务端（`start_date` / `end_date`，与网页版
+  /// otm.onelap.cn/recordPage 的查询方式一致），因此不再受「最新 N 条」
+  /// 窗口的隐形限制；需要时按服务端分页继续翻页。
+  Future<OneLapActivityQuery> fetchActivities({
+    required DateTime since,
+    DateTime? until,
+    int limit = 50,
+  }) async {
+    final String rangeStart = _formatDate(since);
+    final String rangeEnd = _formatDate(until ?? DateTime.now());
+    final int maxResults = limit < 0 ? 0 : (limit > 500 ? 500 : limit);
+    if (maxResults == 0) {
+      return OneLapActivityQuery(rangeStart: rangeStart, rangeEnd: rangeEnd);
     }
-    final items = await _fetchActivitiesPayload(limit: effectiveLimit);
-    final cutoff = since.toIso8601String().substring(0, 10);
+
+    final List<dynamic> items = <dynamic>[];
+    final int requestPageSize = maxResults < _pageSize ? maxResults : _pageSize;
+    int pagesFetched = 0;
+    int page = 1;
+    bool hasMore = true;
+    while (hasMore && items.length < maxResults && pagesFetched < _maxPages) {
+      final _ActivitiesPage payload = await _fetchActivitiesPayload(
+        page: page,
+        limit: requestPageSize,
+        startDate: rangeStart,
+        endDate: rangeEnd,
+      );
+      items.addAll(payload.list);
+      pagesFetched++;
+      hasMore = payload.hasMore && payload.list.isNotEmpty;
+      page++;
+    }
+
+    int outOfRange = 0;
+    int invalid = 0;
     final result = <OneLapActivity>[];
 
     for (final raw in items) {
       final map = raw as Map<String, dynamic>;
       final activityId = '${map['id'] ?? map['activity_id'] ?? ''}'.trim();
       final startTime = _parseStartTime(map);
-      if (activityId.isEmpty || startTime.isEmpty) continue;
-      if (startTime.substring(0, 10).compareTo(cutoff) < 0) continue;
+      final startDate = _dateOnly(startTime);
+      if (activityId.isEmpty || startDate.isEmpty) {
+        invalid++;
+        continue;
+      }
+      if (startDate.compareTo(rangeStart) < 0) {
+        outOfRange++;
+        continue;
+      }
 
       var rawFitUrl = '${map['fit_url'] ?? ''}'.trim();
       var rawFitUrlAlt = '${map['fitUrl'] ?? ''}'.trim();
@@ -170,16 +267,34 @@ class OneLapClient {
           timeSeconds: detailTimeSeconds,
         ),
       );
-      if (result.length >= effectiveLimit) break;
+      if (result.length >= maxResults) break;
     }
-    return result;
+    return OneLapActivityQuery(
+      activities: result,
+      serverReturned: items.length,
+      outOfRange: outOfRange,
+      invalid: invalid,
+      pagesFetched: pagesFetched,
+      rangeStart: rangeStart,
+      rangeEnd: rangeEnd,
+    );
   }
 
-  Future<List<dynamic>> _fetchActivitiesPayload({required int limit}) async {
+  Future<_ActivitiesPage> _fetchActivitiesPayload({
+    required int page,
+    required int limit,
+    required String startDate,
+    required String endDate,
+  }) async {
     final Response<dynamic> response = await _withAuthenticatedOtmRequest(
       (String token) => _dio.post<dynamic>(
         '$otmBaseUrl/api/otm/ride_record/list',
-        data: <String, int>{'page': 1, 'limit': limit},
+        data: <String, dynamic>{
+          'page': page,
+          'limit': limit,
+          'start_date': startDate,
+          'end_date': endDate,
+        },
         options: Options(headers: <String, String>{'Authorization': token}),
       ),
     );
@@ -209,7 +324,16 @@ class OneLapClient {
       throw Exception('OneLap activities payload is invalid');
     }
 
-    return list;
+    final dynamic pagination = data['pagination'];
+    bool hasMore = false;
+    if (pagination is Map) {
+      final dynamic flag = pagination['has_more'];
+      if (flag is bool) {
+        hasMore = flag;
+      }
+    }
+
+    return _ActivitiesPage(list: list, hasMore: hasMore);
   }
 
   bool _looksLikeRiskControl(Map<String, dynamic> payload, String message) {
@@ -275,31 +399,66 @@ class OneLapClient {
     return startTime;
   }
 
+  /// 列表项的时间字段并不稳定：实测 `start_time` 完全不存在，
+  /// `created_at` 可能是占位值 `1970-01-01 08:00:00`，历史数据里也出现过
+  /// 秒 / 毫秒时间戳。这里统一成北京时间墙钟的 `yyyy-MM-ddTHH:mm:ss`
+  /// （不带时区后缀，与 OneLap 自身返回的本地时间口径一致），
+  /// 无法识别时返回空串，由调用方计入 invalid 而不是静默丢弃。
   String _parseStartTime(Map<String, dynamic> raw) {
-    final value = raw['start_time'];
-    if (value != null) return '$value';
-
-    final startRidingTime = raw['start_riding_time'];
-    if (startRidingTime != null) return '$startRidingTime';
-
-    final createdAt = raw['created_at'];
-    if (createdAt is int) {
-      return DateTime.fromMillisecondsSinceEpoch(
-        createdAt * 1000,
-        isUtc: true,
-      ).toIso8601String().replaceFirst(RegExp(r'\.\d+'), '');
-    }
-    if (createdAt is String) {
-      final ts = int.tryParse(createdAt);
-      if (ts != null) {
-        return DateTime.fromMillisecondsSinceEpoch(
-          ts * 1000,
-          isUtc: true,
-        ).toIso8601String().replaceFirst(RegExp(r'\.\d+'), '');
-      }
-      return createdAt;
+    for (final String key in _startTimeKeys) {
+      final String parsed = _coerceTimeValue(raw[key]);
+      if (parsed.isNotEmpty) return parsed;
     }
     return '';
+  }
+
+  static const List<String> _startTimeKeys = <String>[
+    'start_time',
+    'startRidingTime',
+    'start_riding_time',
+    'created_at',
+    'createdAt',
+  ];
+
+  String _coerceTimeValue(Object? value) {
+    if (value == null) return '';
+    if (value is num) return _epochToBeijingIso(value.toInt());
+
+    final String text = '$value'.trim();
+    if (text.isEmpty) return '';
+    if (RegExp(r'^\d{10}$|^\d{13}$').hasMatch(text)) {
+      return _epochToBeijingIso(int.parse(text));
+    }
+    // OneLap 把空时间写成 Unix 纪元，即北京时间的 1970-01-01 08:00:00。
+    if (text.startsWith('1970-01-01')) return '';
+    return text;
+  }
+
+  String _epochToBeijingIso(int value) {
+    final int millis = value > 9999999999 ? value : value * 1000;
+    final DateTime utc = DateTime.fromMillisecondsSinceEpoch(
+      millis,
+      isUtc: true,
+    );
+    final DateTime beijing = utc.add(const Duration(hours: 8));
+    String two(int v) => v.toString().padLeft(2, '0');
+    return '${beijing.year}-${two(beijing.month)}-${two(beijing.day)}'
+        'T${two(beijing.hour)}:${two(beijing.minute)}:${two(beijing.second)}';
+  }
+
+  String _formatDate(DateTime value) {
+    String two(int v) => v.toString().padLeft(2, '0');
+    return '${value.year.toString().padLeft(4, '0')}-'
+        '${two(value.month)}-${two(value.day)}';
+  }
+
+  /// 取出 `yyyy-MM-dd`（兼容 `yyyy/MM/dd`），失败返回空串。
+  String _dateOnly(String value) {
+    final match = RegExp(
+      r'^(\d{4})[-/](\d{2})[-/](\d{2})',
+    ).firstMatch(value.trim());
+    if (match == null) return '';
+    return '${match.group(1)}-${match.group(2)}-${match.group(3)}';
   }
 
   (String, String) _buildRecordIdentity(Map<String, dynamic> raw) {
