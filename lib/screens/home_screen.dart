@@ -985,7 +985,8 @@ class _HomeScreenState extends State<HomeScreen> {
     } else if (hasSuccess) {
       title = '成功同步 ${summary.success} 个🎉';
     } else if (summary.fetched == 0) {
-      title = 'OneLap 暂无该时段的记录';
+      // 导入失败时标题直接说原因（hint 里可能被用户忽略）。
+      title = summary.emptyResultTitle;
       final String range = summary.rangeStart.isEmpty
           ? ''
           : '（查询范围 ${summary.rangeStart} ~ ${summary.rangeEnd}）';

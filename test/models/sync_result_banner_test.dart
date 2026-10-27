@@ -178,7 +178,7 @@ void main() {
 
       expect(banner.summaryLine, contains('OTM 导入失败：HTTP 500'));
       expect(banner.summaryLine, isNot(contains('OTM 导入20条')));
-      expect(summary.bannerTitle, '本次未获取到记录（OTM 导入失败：HTTP 500）');
+      expect(summary.otmImportNote, 'OTM 导入失败：HTTP 500');
     });
 
     test('old persisted JSON without OTM import fields still parses', () {
@@ -218,7 +218,7 @@ void main() {
       expect(banner.summaryLine, contains('OTM 导入2条'));
     });
 
-    test('summaryLine and bannerTitle expose OTM import failure', () {
+    test('summaryLine and otmImportNote expose OTM import failure', () {
       final SyncSummary summary = const SyncSummary(
         fetched: 0,
         deduped: 0,
@@ -227,13 +227,14 @@ void main() {
         otmImportError: 'HTTP 500',
       );
 
-      expect(summary.bannerTitle, '本次未获取到记录（OTM 导入失败：HTTP 500）');
+      expect(summary.otmImportNote, 'OTM 导入失败：HTTP 500');
+      expect(summary.emptyResultTitle, '本次未获取到记录（OTM 导入失败：HTTP 500）');
 
       final SyncResultBanner banner = SyncResultBanner.fromSyncSummary(summary);
       expect(banner.summaryLine, contains('OTM 导入失败：HTTP 500'));
     });
 
-    test('bannerTitle reports the imported count when nothing was fetched', () {
+    test('emptyResultTitle stays neutral while the import succeeded', () {
       const SyncSummary summary = SyncSummary(
         fetched: 0,
         deduped: 0,
@@ -242,7 +243,8 @@ void main() {
         otmImported: 3,
       );
 
-      expect(summary.bannerTitle, '本次未获取到记录（OTM 导入3条）');
+      expect(summary.otmImportNote, 'OTM 导入3条');
+      expect(summary.emptyResultTitle, 'OneLap 暂无该时段的记录');
     });
   });
 }

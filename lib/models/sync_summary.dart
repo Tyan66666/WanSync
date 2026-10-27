@@ -147,19 +147,11 @@ class SyncSummary {
     return null;
   }
 
-  /// 生成用于 HomeScreen banner 显示的汇总文案
-  String get bannerTitle {
-    if (abortedReason == 'risk-control') return '同步中止（风控）';
-    if (fetched > 0) {
-      return '已同步$success条${failed > 0 ? '，失败$failed条' : ''}';
-    }
-    if (serverReturned > 0) {
-      return '服务端返回$serverReturned条，均未进入同步';
-    }
-    // 一条记录都没有时，OTM 预导入的状态是唯一的线索：
-    // 导入失败会让列表永远为空，不写出来用户和我们都无从判断。
-    final String? note = otmImportNote;
-    if (note != null) return '本次未获取到记录（$note）';
-    return '本次未获取到记录';
-  }
+  /// 一条记录都没取到时弹窗的标题。
+  ///
+  /// 导入失败也会导致列表恒空，此时必须把原因说在标题上，
+  /// 不能再让用户以为「OneLap 就是没记录」。
+  String get emptyResultTitle => otmImportError.isNotEmpty
+      ? '本次未获取到记录（OTM 导入失败：$otmImportError）'
+      : 'OneLap 暂无该时段的记录';
 }
