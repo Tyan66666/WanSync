@@ -718,6 +718,8 @@ class SyncEngine {
       invalidRecords: activityQuery.invalid,
       rangeStart: activityQuery.rangeStart,
       rangeEnd: activityQuery.rangeEnd,
+      otmImported: activityQuery.otmImported,
+      otmImportError: activityQuery.otmImportError,
       xingzheSuccess: xingzheSuccess,
       xingzheFailed: xingzheFailed,
       xingzheDeduped: xingzheDeduped,

@@ -84,6 +84,14 @@ class SyncSummary {
   final String rangeStart;
   final String rangeEnd;
 
+  /// 本次同步前 OTM 实际导入的记录数。
+  ///
+  /// 用于区分「OTM 确实没新记录」和「导入没跑成」：后者会让列表永远为空。
+  final int otmImported;
+
+  /// OTM 导入失败原因（成功时为空串）。
+  final String otmImportError;
+
   /// 本次同步运行时间戳（用于 banner 记录）
   final DateTime? syncedAt;
 
@@ -99,6 +107,8 @@ class SyncSummary {
     this.invalidRecords = 0,
     this.rangeStart = '',
     this.rangeEnd = '',
+    this.otmImported = 0,
+    this.otmImportError = '',
     this.xingzheSuccess = 0,
     this.xingzheFailed = 0,
     this.xingzheDeduped = 0,
@@ -135,6 +145,14 @@ class SyncSummary {
     }
     if (serverReturned > 0) {
       return '服务端返回$serverReturned条，均未进入同步';
+    }
+    // 一条记录都没有时，OTM 预导入的状态是唯一的线索：
+    // 导入失败会让列表永远为空，不写出来用户和我们都无从判断。
+    if (otmImportError.isNotEmpty) {
+      return '本次未获取到记录（OTM 导入失败：$otmImportError）';
+    }
+    if (otmImported > 0) {
+      return '本次未获取到记录（OTM 已导入$otmImported条）';
     }
     return '本次未获取到记录';
   }

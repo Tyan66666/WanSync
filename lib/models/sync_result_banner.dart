@@ -19,6 +19,10 @@ class SyncResultBanner {
   final String rangeStart;
   final String rangeEnd;
 
+  // 取数诊断：OTM 预导入的状态（失败会让列表永远为空）
+  final int otmImported;
+  final String otmImportError;
+
   // 行者
   final int xingzheSuccess;
   final int xingzheFailed;
@@ -72,6 +76,8 @@ class SyncResultBanner {
     this.invalidRecords = 0,
     this.rangeStart = '',
     this.rangeEnd = '',
+    this.otmImported = 0,
+    this.otmImportError = '',
   });
 
   factory SyncResultBanner.fromSyncSummary(SyncSummary s) {
@@ -89,6 +95,8 @@ class SyncResultBanner {
       invalidRecords: s.invalidRecords,
       rangeStart: s.rangeStart,
       rangeEnd: s.rangeEnd,
+      otmImported: s.otmImported,
+      otmImportError: s.otmImportError,
       xingzheSuccess: s.xingzheSuccess,
       xingzheFailed: s.xingzheFailed,
       xingzheDeduped: s.xingzheDeduped,
@@ -121,6 +129,8 @@ class SyncResultBanner {
     'invalidRecords': invalidRecords,
     'rangeStart': rangeStart,
     'rangeEnd': rangeEnd,
+    'otmImported': otmImported,
+    'otmImportError': otmImportError,
     'xingzheSuccess': xingzheSuccess,
     'xingzheFailed': xingzheFailed,
     'xingzheDeduped': xingzheDeduped,
@@ -155,6 +165,8 @@ class SyncResultBanner {
       invalidRecords: json['invalidRecords'] as int? ?? 0,
       rangeStart: json['rangeStart'] as String? ?? '',
       rangeEnd: json['rangeEnd'] as String? ?? '',
+      otmImported: json['otmImported'] as int? ?? 0,
+      otmImportError: json['otmImportError'] as String? ?? '',
       xingzheSuccess: json['xingzheSuccess'] as int? ?? 0,
       xingzheFailed: json['xingzheFailed'] as int? ?? 0,
       xingzheDeduped: json['xingzheDeduped'] as int? ?? 0,
@@ -212,6 +224,10 @@ class SyncResultBanner {
     );
     if (outOfRange > 0) buffer.write('，$outOfRange条早于范围');
     if (invalidRecords > 0) buffer.write('，$invalidRecords条时间无效');
+    if (otmImported > 0) buffer.write('，OTM 导入$otmImported条');
+    if (otmImportError.isNotEmpty) {
+      buffer.write('，OTM 导入失败：$otmImportError');
+    }
     return buffer.toString();
   }
 
@@ -236,6 +252,8 @@ class SyncResultBanner {
     invalidRecords: invalidRecords,
     rangeStart: rangeStart,
     rangeEnd: rangeEnd,
+    otmImported: otmImported,
+    otmImportError: otmImportError,
     failureReasons: [
       ...xingzheFailures.map((f) => '行者失败: ${f.displayText} ${f.error ?? ''}'),
       ...stravaFailures.map(

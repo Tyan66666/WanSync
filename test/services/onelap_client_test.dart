@@ -2332,7 +2332,9 @@ void main() {
           return ResponseBody.fromString('not found', 404);
         });
 
-        await client.fetchActivities(since: DateTime(2026, 10, 21));
+        final OneLapActivityQuery query = await client.fetchActivities(
+          since: DateTime(2026, 10, 21),
+        );
 
         expect(
           requests,
@@ -2353,6 +2355,9 @@ void main() {
         expect(importBodies.single['uid'], '399666');
         expect(importAuthHeaders.single, 'otm-token');
         expect(client.lastImportedCount, 2);
+        // 导入结果要能传到查询结果上，否则出问题时无从判断。
+        expect(query.otmImported, 2);
+        expect(query.otmImportError, isEmpty);
       },
     );
 
@@ -2485,6 +2490,9 @@ void main() {
 
       expect(query.activities.single.activityId, 'a');
       expect(client.lastImportedCount, 0);
+      expect(query.otmImported, 0);
+      expect(query.otmImportError, 'HTTP 500');
+      expect(client.lastImportError, 'HTTP 500');
     });
 
     test(

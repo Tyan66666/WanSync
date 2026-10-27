@@ -128,5 +128,89 @@ void main() {
       expect(restored.intervalsIcuFailures, hasLength(1));
       expect(restored.intervalsIcuFailures.first.error, 'API Key 无效');
     });
+
+    test('OTM import diagnostics survive round-trip', () {
+      final SyncSummary summary = SyncSummary(
+        fetched: 2,
+        deduped: 0,
+        success: 2,
+        failed: 0,
+        otmImported: 2,
+        otmImportError: '',
+      );
+
+      final SyncResultBanner banner = SyncResultBanner.fromSyncSummary(summary);
+      final SyncResultBanner restored = SyncResultBanner.fromJson(
+        banner.toJson(),
+      );
+
+      expect(restored.otmImported, 2);
+      expect(restored.otmImportError, '');
+      expect(banner.toSyncSummary().otmImported, 2);
+    });
+
+    test('old persisted JSON without OTM import fields still parses', () {
+      // 旧版本 state.json 里没有这个诊断字段，不能因此解析失败或数值錯位。
+      final SyncResultBanner restored =
+          SyncResultBanner.fromJson(<String, dynamic>{
+            'id': 'legacy-1',
+            'syncedAt': '2026-10-20T08:00:00.000',
+            'fetched': 0,
+            'deduped': 0,
+            'pending': 0,
+            'success': 0,
+            'failed': 0,
+            'serverReturned': 0,
+            'outOfRange': 0,
+            'invalidRecords': 0,
+            'rangeStart': '2026-10-20',
+            'rangeEnd': '2026-10-23',
+          });
+
+      expect(restored.otmImported, 0);
+      expect(restored.otmImportError, '');
+      expect(restored.summaryLine, isNot(contains('OTM')));
+    });
+
+    test('summaryLine shows how many records OTM imported', () {
+      final SyncResultBanner banner = SyncResultBanner.fromSyncSummary(
+        const SyncSummary(
+          fetched: 2,
+          deduped: 0,
+          success: 2,
+          failed: 0,
+          otmImported: 2,
+        ),
+      );
+
+      expect(banner.summaryLine, contains('OTM 导入2条'));
+    });
+
+    test('summaryLine and bannerTitle expose OTM import failure', () {
+      final SyncSummary summary = const SyncSummary(
+        fetched: 0,
+        deduped: 0,
+        success: 0,
+        failed: 0,
+        otmImportError: 'HTTP 500',
+      );
+
+      expect(summary.bannerTitle, '本次未获取到记录（OTM 导入失败：HTTP 500）');
+
+      final SyncResultBanner banner = SyncResultBanner.fromSyncSummary(summary);
+      expect(banner.summaryLine, contains('OTM 导入失败：HTTP 500'));
+    });
+
+    test('bannerTitle reports the imported count when nothing was fetched', () {
+      const SyncSummary summary = SyncSummary(
+        fetched: 0,
+        deduped: 0,
+        success: 0,
+        failed: 0,
+        otmImported: 3,
+      );
+
+      expect(summary.bannerTitle, '本次未获取到记录（OTM 已导入3条）');
+    });
   });
 }
