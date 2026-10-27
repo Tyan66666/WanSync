@@ -2740,6 +2740,22 @@ void main() {
       expect(bodies.single['uid'], '');
     });
 
+    test('reports a login payload that is not a JSON object', () async {
+      final OneLapClient client = buildClient((options) async {
+        if (options.uri.toString() == 'http://example.com/api/login') {
+          // 数组 JSON：直接 `as Map` 会抛 TypeError（Error，不被 on Exception 接住）。
+          return jsonBody(<dynamic>[1, 2, 3]);
+        }
+        return ResponseBody.fromString('not found', 404);
+      });
+
+      await expectLater(
+        client.fetchActivities(since: DateTime(2026, 10, 21)),
+        throwsA(isA<Exception>()),
+      );
+      expect(client.lastImportError, '登录失败');
+    });
+
     test(
       'does not report import status on a query that skipped the import',
       () async {
@@ -2782,7 +2798,7 @@ void main() {
 
         await expectLater(
           client.fetchActivities(since: DateTime(2026, 10, 21)),
-          throwsA(anything),
+          throwsA(isA<Exception>()),
         );
         // 登录失败仍然中断同步（行为不变），但原因不能再是空白。
         expect(client.lastImportError, '登录失败');

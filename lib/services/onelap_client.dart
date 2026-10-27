@@ -141,7 +141,13 @@ class OneLapClient {
       '$baseUrl/api/login',
       data: FormData.fromMap({'account': username, 'password': _passwordHash}),
     );
-    _cacheAuthFromLoginPayload(response.data as Map<String, dynamic>);
+    final dynamic payload = response.data;
+    if (payload is! Map<String, dynamic>) {
+      // 响应体不是 JSON 对象时，直接强转会抛 `TypeError`（属于 `Error`，
+      // 不会被导入流程的 `on Exception` 接住），所以先做类型守卫。
+      throw Exception('OneLap login response is not a JSON object');
+    }
+    _cacheAuthFromLoginPayload(payload);
   }
 
   String get _passwordHash => md5.convert(utf8.encode(password)).toString();

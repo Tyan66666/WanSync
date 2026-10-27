@@ -985,24 +985,9 @@ class _HomeScreenState extends State<HomeScreen> {
     } else if (hasSuccess) {
       title = '成功同步 ${summary.success} 个🎉';
     } else if (summary.fetched == 0) {
-      // 导入失败时标题直接说原因（hint 里可能被用户忽略）；
-      // 服务端返回过记录时归因不了导入，保持中性标题。
+      // 标题说结论、hint 说细节与下一步（两者分工见 SyncSummary.emptyResultHint）。
       title = summary.emptyResultTitle;
-      final String range = summary.rangeStart.isEmpty
-          ? ''
-          : '（查询范围 ${summary.rangeStart} ~ ${summary.rangeEnd}）';
-      final List<String> lines = <String>[
-        '服务端返回 ${summary.serverReturned} 条$range。',
-      ];
-      if (summary.otmImportError.isNotEmpty) {
-        // 标题已经点明失败，这里只给下一步动作，不重复错误串。
-        lines.add('OTM 预导入没成功，请检查网络后重新同步；也可以先在浏览器打开一次 OTM 日历页唤醒导入。');
-      } else if (summary.filteredOut == 0) {
-        // 有记录但被过滤时，下面的 filteredOut 说明已经解释原因，不再猜。
-        // 导入条数已由标题承载，这里只说回传延迟。
-        lines.add('骑行结束后码表/手机回传 OneLap 有延迟，稍后重新同步即可。');
-      }
-      hint = lines.join('\n');
+      hint = summary.emptyResultHint;
     } else if (summary.deduped >= summary.fetched) {
       title = '${summary.fetched} 条都已同步过';
       hint =

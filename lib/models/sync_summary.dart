@@ -146,7 +146,7 @@ class SyncSummary {
     required String error,
   }) {
     if (error.isNotEmpty) return 'OTM 导入失败：$error';
-    if (imported > 0) return 'OTM 导入$imported条';
+    if (imported > 0) return 'OTM 已导入$imported条';
     return null;
   }
 
@@ -163,5 +163,30 @@ class SyncSummary {
       return '本次未获取到记录（$note）';
     }
     return 'OneLap 暂无该时段的记录';
+  }
+
+  /// 空结果弹窗的说明文案：标题放结论，这里放细节和下一步动作。
+  ///
+  /// 与 [emptyResultTitle] 分工 — 标题在 `serverReturned == 0` 时已带
+  /// [otmImportNote]，所以这里只在服务端确实返回过记录时才写 note，
+  /// 否则同一句话会在一个弹窗里出现两次。
+  String get emptyResultHint {
+    final String range = rangeStart.isEmpty
+        ? ''
+        : '（查询范围 $rangeStart ~ $rangeEnd）';
+    final List<String> lines = <String>['服务端返回 $serverReturned 条$range。'];
+    if (serverReturned == 0) {
+      if (otmImportError.isNotEmpty) {
+        // 标题已点明失败，这里只给下一步，不重复错误串。
+        lines.add('OTM 预导入没成功，请检查网络后重新同步；也可以先在浏览器打开一次 OTM 日历页唤醒导入。');
+      } else {
+        lines.add('骑行结束后码表/手机回传 OneLap 有延迟，稍后重新同步即可。');
+      }
+    } else {
+      // 服务端返回过记录 ⇒ 标题保持中性，导入状态必须由这里承载。
+      final String? note = otmImportNote;
+      if (note != null) lines.add('$note。');
+    }
+    return lines.join('\n');
   }
 }
