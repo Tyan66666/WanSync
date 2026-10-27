@@ -985,13 +985,9 @@ class _HomeScreenState extends State<HomeScreen> {
     } else if (hasSuccess) {
       title = '成功同步 ${summary.success} 个🎉';
     } else if (summary.fetched == 0) {
-      title = 'OneLap 暂无该时段的记录';
-      final String range = summary.rangeStart.isEmpty
-          ? ''
-          : '（查询范围 ${summary.rangeStart} ~ ${summary.rangeEnd}）';
-      hint =
-          '服务端返回 0 条$range。\n'
-          '骑行结束后码表/手机回传 OneLap 有延迟，稍后重新同步即可。';
+      // 标题说结论、hint 说细节与下一步（两者分工见 SyncSummary.emptyResultHint）。
+      title = summary.emptyResultTitle;
+      hint = summary.emptyResultHint;
     } else if (summary.deduped >= summary.fetched) {
       title = '${summary.fetched} 条都已同步过';
       hint =

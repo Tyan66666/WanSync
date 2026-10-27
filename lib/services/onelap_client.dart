@@ -1,11 +1,11 @@
 import 'dart:convert';
-import 'dart:typed_data';
 import 'dart:io';
 
 import 'package:crypto/crypto.dart';
 import 'package:cookie_jar/cookie_jar.dart';
 import 'package:dio/dio.dart';
 import 'package:dio_cookie_manager/dio_cookie_manager.dart';
+import 'package:flutter/foundation.dart';
 
 import '../models/onelap_activity.dart';
 
@@ -59,6 +59,15 @@ class OneLapActivityQuery {
   /// 实际请求的页数。
   final int pagesFetched;
 
+  /// 本次同步前 OTM 实际导入的记录数。
+  ///
+  /// 用于区分「OTM 确实没新记录」和「导入没跑成」：
+  /// 后者会让列表永远返回空，用户只看到「没有需要同步的了」。
+  final int otmImported;
+
+  /// OTM 导入失败原因（成功时为空串）。
+  final String otmImportError;
+
   /// 查询的日期范围（`yyyy-MM-dd`），用于结果展示。
   final String rangeStart;
   final String rangeEnd;
@@ -69,6 +78,8 @@ class OneLapActivityQuery {
     this.outOfRange = 0,
     this.invalid = 0,
     this.pagesFetched = 0,
+    this.otmImported = 0,
+    this.otmImportError = '',
     this.rangeStart = '',
     this.rangeEnd = '',
   });
@@ -94,6 +105,13 @@ class OneLapClient {
   late final Dio _dio;
   String? _token;
   String? _refreshToken;
+  String? _uid;
+  bool _otmImportDone = false;
+  int _lastImportedCount = 0;
+  String? _lastImportError;
+
+  /// 单次同步最多追问几轮 OTM 导入（每轮候选窗口 20 条）。
+  static const int _otmImportMaxRounds = 3;
 
   OneLapClient({
     required this.baseUrl,
@@ -123,7 +141,13 @@ class OneLapClient {
       '$baseUrl/api/login',
       data: FormData.fromMap({'account': username, 'password': _passwordHash}),
     );
-    _cacheAuthFromLoginPayload(response.data as Map<String, dynamic>);
+    final dynamic payload = response.data;
+    if (payload is! Map<String, dynamic>) {
+      // 响应体不是 JSON 对象时，直接强转会抛 `TypeError`（属于 `Error`，
+      // 不会被导入流程的 `on Exception` 接住），所以先做类型守卫。
+      throw Exception('OneLap login response is not a JSON object');
+    }
+    _cacheAuthFromLoginPayload(payload);
   }
 
   String get _passwordHash => md5.convert(utf8.encode(password)).toString();
@@ -155,6 +179,11 @@ class OneLapClient {
     if (maxResults == 0) {
       return OneLapActivityQuery(rangeStart: rangeStart, rangeEnd: rangeEnd);
     }
+
+    // 必须先让 OTM 把 App 侧最新记录导入，否则列表接口看不到新骑行。
+    // 导入只跑一次，第二次查询不会重跑，因此只在真跑了的那次上报诊断。
+    final bool importRan = !_otmImportDone;
+    await importLatestRecords();
 
     final List<dynamic> items = <dynamic>[];
     final int requestPageSize = maxResults < _pageSize ? maxResults : _pageSize;
@@ -275,10 +304,140 @@ class OneLapClient {
       outOfRange: outOfRange,
       invalid: invalid,
       pagesFetched: pagesFetched,
+      otmImported: importRan ? _lastImportedCount : 0,
+      otmImportError: importRan ? (_lastImportError ?? '') : '',
       rangeStart: rangeStart,
       rangeEnd: rangeEnd,
     );
   }
+
+  /// 让 OTM 把 OneLap App 侧的最新骑行记录导入到 OTM 记录库。
+  ///
+  /// 背景（实测 2026-10-27）：网页版每次进入页面都会调
+  /// `POST /api/otm/ride_record/capability_list {uid}`（见 otm 前端
+  /// `index-DMvdeOia.js` 的启动序列），其响应体带
+  /// `data.sync = {total, inserted, skipped, restored, chart_info_filled, invalid, failed}`，
+  /// 即一次「最新 20 条记录」的导入作业；而
+  /// `POST /api/otm/ride_record/list` 只能看到**已经导入**的记录。
+  /// 因此不先调这个接口时，刚骑完的新记录在 OTM 里根本不存在，同步只会拿到
+  /// 「没有需要同步的了」。
+  ///
+  /// 导入在服务端同步完成后再返回计数，所以返回后立刻拉列表即可看到新记录。
+  /// 本方法为幂等操作（重复调用只会 `skipped`），每个 client 实例只执行一次。
+  /// 除风控外，失败不阻断同步：真正的接口错误会由后面的列表请求抛出。
+  Future<void> importLatestRecords() async {
+    if (_otmImportDone) return;
+    _otmImportDone = true;
+    _lastImportError = null;
+    try {
+      // 单次导入的候选窗口实测固定为 20 条（多次响应里 `sync.total` 都是 20）。
+      // 若一轮就把窗口填满（`inserted == total`），说明可能还有更早的记录没导入，
+      // 再追问最多 [_otmImportMaxRounds] - 1 轮；窗口已全部存在时下一轮
+      // `inserted` 会变 0，循环自然结束。60 条覆盖「长期没同步后一次性补齐」。
+      for (int round = 0; round < _otmImportMaxRounds; round++) {
+        final (int inserted, int total) = await _runOtmImport();
+        _lastImportedCount += inserted;
+        if (inserted == 0 || inserted < total) break;
+      }
+      if (_lastImportedCount > 0) {
+        debugPrint('[OneLap] OTM 预导入 $_lastImportedCount 条记录');
+      }
+    } on OnelapRiskControlError {
+      rethrow;
+    } on DioException catch (e) {
+      // 预热失败不阻断同步，但要留下可诊断的痕迹（否则用户只会看到「没有需要同步的了」）。
+      _lastImportError = _describeImportFailure(e);
+      debugPrint('[OneLap] OTM 预导入失败（不阻断同步）：$_lastImportError');
+    } on Exception catch (e) {
+      // 懒登录失败抛的是普通 Exception（`_cacheAuthFromLoginPayload`），不是
+      // DioException：这里不吞掉它（登录失败本就无法同步），但先记下原因再抛，
+      // 否则日志里同样什么都没有。
+      //
+      // 归因前提：`_runOtmImport` 的解析全用类型守卫（`is! Map` / `is int`），
+      // 不会抛异常，因此能走到这里的只可能是 login 阶段。
+      _lastImportError = '登录失败';
+      debugPrint('[OneLap] OTM 预导入失败（$_lastImportError）：$e');
+      rethrow;
+    }
+  }
+
+  /// 把导入失败压成一句可展示的短原因（不包含 URL / header，避免泄露凭证）。
+  String _describeImportFailure(DioException error) {
+    final int? status = error.response?.statusCode;
+    if (status != null) return 'HTTP $status';
+    switch (error.type) {
+      case DioExceptionType.connectionTimeout:
+        return '连接超时';
+      case DioExceptionType.sendTimeout:
+        return '发送超时';
+      case DioExceptionType.receiveTimeout:
+        return '接收超时';
+      case DioExceptionType.connectionError:
+        return '网络连接失败';
+      case DioExceptionType.badCertificate:
+        return '证书校验失败';
+      case DioExceptionType.cancel:
+        return '请求已取消';
+      case DioExceptionType.badResponse:
+        return '响应异常';
+      case DioExceptionType.unknown:
+        return '网络错误';
+    }
+  }
+
+  /// 触发一次 OTM 侧导入，返回 `(inserted, total)`。
+  Future<(int, int)> _runOtmImport() async {
+    final Response<dynamic> response = await _withAuthenticatedOtmRequest(
+      // `_uid` 必须在闭包里读：`_withAuthenticatedOtmRequest` 先拿 token（首次会走
+      // login），登录成功后才执行这个闭包——提前读会拿到 null。
+      (String token) => _dio.post<dynamic>(
+        '$otmBaseUrl/api/otm/ride_record/capability_list',
+        data: <String, dynamic>{'uid': _uid ?? ''},
+        options: Options(headers: <String, String>{'Authorization': token}),
+      ),
+    );
+
+    final dynamic payload = response.data;
+    if (payload is! Map<String, dynamic>) {
+      _lastImportError = '响应格式无法解析';
+      return (0, 0);
+    }
+
+    final String message =
+        '${payload['msg'] ?? payload['message'] ?? payload['error'] ?? 'unknown'}';
+    final Object? rawCode = payload['code'];
+    if (rawCode != 200) {
+      if (_looksLikeRiskControl(payload, message)) {
+        throw OnelapRiskControlError(message);
+      }
+      _lastImportError = rawCode is int ? '接口返回 code=$rawCode' : '接口返回异常状态';
+      return (0, 0);
+    }
+
+    final dynamic data = payload['data'];
+    if (data is! Map) {
+      _lastImportError = '响应缺少 data';
+      return (0, 0);
+    }
+    final dynamic sync = data['sync'];
+    if (sync is! Map) {
+      _lastImportError = '响应缺少 sync 计数';
+      return (0, 0);
+    }
+
+    final dynamic inserted = sync['inserted'];
+    final dynamic total = sync['total'];
+    return (inserted is int ? inserted : 0, total is int ? total : 0);
+  }
+
+  /// 上一次 [importLatestRecords] 实际导入的记录数（诊断用）。
+  int get lastImportedCount => _lastImportedCount;
+
+  /// 上一次 [importLatestRecords] 的失败原因（无失败时为 `null`）。
+  ///
+  /// 多轮导入可能「先导入若干条、下一轮失败」，此时它会与
+  /// [lastImportedCount] > 0 同时成立。
+  String? get lastImportError => _lastImportError;
 
   Future<_ActivitiesPage> _fetchActivitiesPayload({
     required int page,
@@ -989,6 +1148,18 @@ class OneLapClient {
 
     _token = token;
     _refreshToken = refreshToken;
+
+    // `capability_list` 需要账号 uid 才能定位到「要导入哪个账号的记录」。
+    // 登录响应把它放在 `data.userinfo.uid`（data 也可能是包了一层的数组）。
+    final Object? rawUserinfo = data['userinfo'];
+    if (rawUserinfo is Map) {
+      final String uid = '${rawUserinfo['uid'] ?? ''}'.trim();
+      if (uid.isNotEmpty) _uid = uid;
+    }
+    if (_uid == null) {
+      // 解析不到不影响导入（服务端会按 token 定人），但接口结构变了要能看出来。
+      debugPrint('[OneLap] 登录响应未取到 uid，OTM 预导入按 token 识别账号');
+    }
   }
 
   List<String> _buildDownloadUrls(String fitUrl, {OneLapActivity? activity}) {
