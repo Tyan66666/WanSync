@@ -2639,6 +2639,48 @@ void main() {
       );
     });
 
+    test('maps every transport failure to a short reason', () async {
+      Future<String> importErrorForType(DioExceptionType type) async {
+        final OneLapClient client = buildClient((options) async {
+          final String url = options.uri.toString();
+          if (url == 'http://example.com/api/login') return loginBody();
+          if (url ==
+              'https://otm.onelap.cn/api/otm/ride_record/capability_list') {
+            throw DioException(
+              requestOptions: RequestOptions(path: '/probe'),
+              type: type,
+            );
+          }
+          return jsonBody({
+            'code': 200,
+            'data': {'list': <dynamic>[]},
+          });
+        });
+        final OneLapActivityQuery query = await client.fetchActivities(
+          since: DateTime(2026, 10, 21),
+        );
+        return query.otmImportError;
+      }
+
+      final Map<DioExceptionType, String> expected = <DioExceptionType, String>{
+        DioExceptionType.connectionTimeout: '连接超时',
+        DioExceptionType.sendTimeout: '发送超时',
+        DioExceptionType.receiveTimeout: '接收超时',
+        DioExceptionType.connectionError: '网络连接失败',
+        DioExceptionType.badCertificate: '证书校验失败',
+        DioExceptionType.cancel: '请求已取消',
+        DioExceptionType.unknown: '网络错误',
+      };
+
+      for (final MapEntry<DioExceptionType, String> entry in expected.entries) {
+        expect(
+          await importErrorForType(entry.key),
+          entry.value,
+          reason: '${entry.key} 的映射变了',
+        );
+      }
+    });
+
     test('explains a response without sync counters', () async {
       final OneLapClient client = buildClient((options) async {
         final String url = options.uri.toString();
@@ -2751,7 +2793,13 @@ void main() {
 
       await expectLater(
         client.fetchActivities(since: DateTime(2026, 10, 21)),
-        throwsA(isA<Exception>()),
+        throwsA(
+          isA<Exception>().having(
+            (Exception e) => e.toString(),
+            'message',
+            contains('not a JSON object'),
+          ),
+        ),
       );
       expect(client.lastImportError, '登录失败');
     });
