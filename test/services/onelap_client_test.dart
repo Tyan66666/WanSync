@@ -2514,6 +2514,200 @@ void main() {
         );
       },
     );
+
+    test(
+      'reports both the imported count and the later round failure',
+      () async {
+        int importCalls = 0;
+        final OneLapClient client = buildClient((options) async {
+          final String url = options.uri.toString();
+          if (url == 'http://example.com/api/login') return loginBody();
+          if (url ==
+              'https://otm.onelap.cn/api/otm/ride_record/capability_list') {
+            importCalls++;
+            if (importCalls == 1) {
+              return jsonBody({
+                'code': 200,
+                'data': {
+                  'sync': {'total': 20, 'inserted': 20, 'skipped': 0},
+                },
+              });
+            }
+            return ResponseBody.fromString('boom', 500);
+          }
+          if (url == 'https://otm.onelap.cn/api/otm/ride_record/list') {
+            return jsonBody({
+              'code': 200,
+              'data': {'list': <dynamic>[]},
+            });
+          }
+          return ResponseBody.fromString('not found', 404);
+        });
+
+        final OneLapActivityQuery query = await client.fetchActivities(
+          since: DateTime(2026, 10, 21),
+        );
+
+        // 第 1 轮吃满窗口后追问，第 2 轮失败：两个结论同时存在。
+        expect(importCalls, 2);
+        expect(query.otmImported, 20);
+        expect(query.otmImportError, 'HTTP 500');
+      },
+    );
+
+    test(
+      'describes a network failure without leaking request details',
+      () async {
+        final OneLapClient client = buildClient((options) async {
+          final String url = options.uri.toString();
+          if (url == 'http://example.com/api/login') return loginBody();
+          if (url ==
+              'https://otm.onelap.cn/api/otm/ride_record/capability_list') {
+            throw DioException.connectionTimeout(
+              timeout: const Duration(seconds: 30),
+              requestOptions: options,
+            );
+          }
+          if (url == 'https://otm.onelap.cn/api/otm/ride_record/list') {
+            return jsonBody({
+              'code': 200,
+              'data': {'list': <dynamic>[]},
+            });
+          }
+          return ResponseBody.fromString('not found', 404);
+        });
+
+        final OneLapActivityQuery query = await client.fetchActivities(
+          since: DateTime(2026, 10, 21),
+        );
+
+        expect(query.otmImportError, '连接超时');
+        // 诊断串会进用户截图，不能带 URL / 凭证。
+        expect(
+          query.otmImportError,
+          isNot(
+            contains(
+              RegExp(
+                r'https?://|token|authorization|cookie',
+                caseSensitive: false,
+              ),
+            ),
+          ),
+        );
+      },
+    );
+
+    test('describes a bad response with and without a status code', () async {
+      Future<String> importErrorFor(DioException failure) async {
+        final OneLapClient client = buildClient((options) async {
+          final String url = options.uri.toString();
+          if (url == 'http://example.com/api/login') return loginBody();
+          if (url.endsWith('capability_list')) throw failure;
+          return jsonBody({
+            'code': 200,
+            'data': {'list': <dynamic>[]},
+          });
+        });
+        final OneLapActivityQuery query = await client.fetchActivities(
+          since: DateTime(2026, 10, 21),
+        );
+        return query.otmImportError;
+      }
+
+      final RequestOptions options = RequestOptions(path: '/probe');
+      expect(
+        await importErrorFor(
+          DioException.badResponse(
+            statusCode: 503,
+            requestOptions: options,
+            response: Response<dynamic>(
+              requestOptions: options,
+              statusCode: 503,
+            ),
+          ),
+        ),
+        'HTTP 503',
+      );
+      expect(
+        await importErrorFor(
+          DioException(
+            requestOptions: options,
+            type: DioExceptionType.badResponse,
+          ),
+        ),
+        '响应异常',
+      );
+    });
+
+    test('explains a response without sync counters', () async {
+      final OneLapClient client = buildClient((options) async {
+        final String url = options.uri.toString();
+        if (url == 'http://example.com/api/login') return loginBody();
+        if (url ==
+            'https://otm.onelap.cn/api/otm/ride_record/capability_list') {
+          return jsonBody({'code': 200, 'data': <String, dynamic>{}});
+        }
+        return jsonBody({
+          'code': 200,
+          'data': {'list': <dynamic>[]},
+        });
+      });
+
+      final OneLapActivityQuery query = await client.fetchActivities(
+        since: DateTime(2026, 10, 21),
+      );
+
+      expect(query.otmImportError, '响应缺少 sync 计数');
+    });
+
+    test(
+      'does not report import status on a query that skipped the import',
+      () async {
+        final OneLapClient client = buildClient((options) async {
+          final String url = options.uri.toString();
+          if (url == 'http://example.com/api/login') return loginBody();
+          if (url ==
+              'https://otm.onelap.cn/api/otm/ride_record/capability_list') {
+            return ResponseBody.fromString('boom', 500);
+          }
+          return jsonBody({
+            'code': 200,
+            'data': {'list': <dynamic>[]},
+          });
+        });
+
+        final OneLapActivityQuery first = await client.fetchActivities(
+          since: DateTime(2026, 10, 21),
+        );
+        final OneLapActivityQuery second = await client.fetchActivities(
+          since: DateTime(2026, 10, 21),
+        );
+
+        expect(first.otmImportError, 'HTTP 500');
+        // 第二次查询没跑导入，就不该把上一次的结果当成「本次」的诊断。
+        expect(second.otmImported, 0);
+        expect(second.otmImportError, isEmpty);
+      },
+    );
+
+    test(
+      'records the reason when logging in fails during the import',
+      () async {
+        final OneLapClient client = buildClient((options) async {
+          if (options.uri.toString() == 'http://example.com/api/login') {
+            return jsonBody({'code': 500, 'msg': 'bad credential'});
+          }
+          return ResponseBody.fromString('not found', 404);
+        });
+
+        await expectLater(
+          client.fetchActivities(since: DateTime(2026, 10, 21)),
+          throwsA(anything),
+        );
+        // 登录失败仍然中断同步（行为不变），但原因不能再是空白。
+        expect(client.lastImportError, '登录或认证失败');
+      },
+    );
   });
 
   group('OneLapClient.downloadFit', () {

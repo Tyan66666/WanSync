@@ -224,11 +224,17 @@ class SyncResultBanner {
     );
     if (outOfRange > 0) buffer.write('，$outOfRange条早于范围');
     if (invalidRecords > 0) buffer.write('，$invalidRecords条时间无效');
-    if (otmImported > 0) buffer.write('，OTM 导入$otmImported条');
-    if (otmImportError.isNotEmpty) {
-      buffer.write('，OTM 导入失败：$otmImportError');
-    }
+    final String? note = otmImportNote;
+    if (note != null) buffer.write('，$note');
     return buffer.toString();
+  }
+
+  /// OTM 预导入的补充说明（与 [SyncSummary.otmImportNote] 同一口径：
+  /// 失败优先，失败时不再报计数）。
+  String? get otmImportNote {
+    if (otmImportError.isNotEmpty) return 'OTM 导入失败：$otmImportError';
+    if (otmImported > 0) return 'OTM 导入$otmImported条';
+    return null;
   }
 
   /// 简要时间标签（用于列表显示）

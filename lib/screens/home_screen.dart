@@ -992,6 +992,9 @@ class _HomeScreenState extends State<HomeScreen> {
       hint =
           '服务端返回 0 条$range。\n'
           '骑行结束后码表/手机回传 OneLap 有延迟，稍后重新同步即可。';
+      // OTM 预导入失败也会让列表永远为空，不能再笼统说「稍后重试」。
+      final String? otmNote = summary.otmImportNote;
+      if (otmNote != null) hint = '$hint\n$otmNote';
     } else if (summary.deduped >= summary.fetched) {
       title = '${summary.fetched} 条都已同步过';
       hint =

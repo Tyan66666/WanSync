@@ -147,6 +147,38 @@ void main() {
       expect(restored.otmImported, 2);
       expect(restored.otmImportError, '');
       expect(banner.toSyncSummary().otmImported, 2);
+      expect(banner.toSyncSummary().otmImportError, '');
+    });
+
+    test('failure reason survives toSyncSummary', () {
+      final SyncResultBanner banner = SyncResultBanner.fromSyncSummary(
+        const SyncSummary(
+          fetched: 0,
+          deduped: 0,
+          success: 0,
+          failed: 0,
+          otmImportError: 'HTTP 500',
+        ),
+      );
+
+      expect(banner.toSyncSummary().otmImportError, 'HTTP 500');
+    });
+
+    test('a failed round hides the partial import count', () {
+      // 多轮导入可能「先导入若干条、下一轮失败」，两个结论不能同屏。
+      const SyncSummary summary = SyncSummary(
+        fetched: 0,
+        deduped: 0,
+        success: 0,
+        failed: 0,
+        otmImported: 20,
+        otmImportError: 'HTTP 500',
+      );
+      final SyncResultBanner banner = SyncResultBanner.fromSyncSummary(summary);
+
+      expect(banner.summaryLine, contains('OTM 导入失败：HTTP 500'));
+      expect(banner.summaryLine, isNot(contains('OTM 导入20条')));
+      expect(summary.bannerTitle, '本次未获取到记录（OTM 导入失败：HTTP 500）');
     });
 
     test('old persisted JSON without OTM import fields still parses', () {
@@ -210,7 +242,7 @@ void main() {
         otmImported: 3,
       );
 
-      expect(summary.bannerTitle, '本次未获取到记录（OTM 已导入3条）');
+      expect(summary.bannerTitle, '本次未获取到记录（OTM 导入3条）');
     });
   });
 }

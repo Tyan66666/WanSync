@@ -175,6 +175,8 @@ class OneLapClient {
     }
 
     // 必须先让 OTM 把 App 侧最新记录导入，否则列表接口看不到新骑行。
+    // 导入只跑一次，第二次查询不会重跑，因此只在真跑了的那次上报诊断。
+    final bool importRan = !_otmImportDone;
     await importLatestRecords();
 
     final List<dynamic> items = <dynamic>[];
@@ -296,8 +298,8 @@ class OneLapClient {
       outOfRange: outOfRange,
       invalid: invalid,
       pagesFetched: pagesFetched,
-      otmImported: _lastImportedCount,
-      otmImportError: _lastImportError ?? '',
+      otmImported: importRan ? _lastImportedCount : 0,
+      otmImportError: importRan ? (_lastImportError ?? '') : '',
       rangeStart: rangeStart,
       rangeEnd: rangeEnd,
     );
@@ -340,6 +342,13 @@ class OneLapClient {
       // 预热失败不阻断同步，但要留下可诊断的痕迹（否则用户只会看到「没有需要同步的了」）。
       _lastImportError = _describeImportFailure(e);
       debugPrint('[OneLap] OTM 预导入失败（不阻断同步）：$_lastImportError');
+    } on Exception catch (e) {
+      // 懒登录失败抛的是普通 Exception（`_cacheAuthFromLoginPayload`），不是
+      // DioException：这里不吞掉它（登录失败本就无法同步），但先记下原因再抛，
+      // 否则日志里同样什么都没有。
+      _lastImportError = '登录或认证失败';
+      debugPrint('[OneLap] OTM 预导入失败（$_lastImportError）：$e');
+      rethrow;
     }
   }
 
@@ -387,11 +396,12 @@ class OneLapClient {
 
     final String message =
         '${payload['msg'] ?? payload['message'] ?? payload['error'] ?? 'unknown'}';
-    if (payload['code'] != 200) {
+    final Object? rawCode = payload['code'];
+    if (rawCode != 200) {
       if (_looksLikeRiskControl(payload, message)) {
         throw OnelapRiskControlError(message);
       }
-      _lastImportError = '接口返回 code=${payload['code']}';
+      _lastImportError = rawCode is int ? '接口返回 code=$rawCode' : '接口返回异常状态';
       return (0, 0);
     }
 
@@ -414,7 +424,10 @@ class OneLapClient {
   /// 上一次 [importLatestRecords] 实际导入的记录数（诊断用）。
   int get lastImportedCount => _lastImportedCount;
 
-  /// 上一次 [importLatestRecords] 的失败原因（成功时为 `null`）。
+  /// 上一次 [importLatestRecords] 的失败原因（无失败时为 `null`）。
+  ///
+  /// 多轮导入可能「先导入若干条、下一轮失败」，此时它会与
+  /// [lastImportedCount] > 0 同时成立。
   String? get lastImportError => _lastImportError;
 
   Future<_ActivitiesPage> _fetchActivitiesPayload({

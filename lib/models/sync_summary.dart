@@ -137,6 +137,16 @@ class SyncSummary {
   /// 服务端有数据、但没能进入同步的条数（范围外 + 无效时间）。
   int get filteredOut => outOfRange + invalidRecords;
 
+  /// OTM 预导入的补充说明（无异常状态时为 `null`）。
+  ///
+  /// 失败时只报失败、不报计数：多轮导入可能「先导入若干条、下一轮失败」，
+  /// 两个结论同屏会自相矛盾。
+  String? get otmImportNote {
+    if (otmImportError.isNotEmpty) return 'OTM 导入失败：$otmImportError';
+    if (otmImported > 0) return 'OTM 导入$otmImported条';
+    return null;
+  }
+
   /// 生成用于 HomeScreen banner 显示的汇总文案
   String get bannerTitle {
     if (abortedReason == 'risk-control') return '同步中止（风控）';
@@ -148,12 +158,8 @@ class SyncSummary {
     }
     // 一条记录都没有时，OTM 预导入的状态是唯一的线索：
     // 导入失败会让列表永远为空，不写出来用户和我们都无从判断。
-    if (otmImportError.isNotEmpty) {
-      return '本次未获取到记录（OTM 导入失败：$otmImportError）';
-    }
-    if (otmImported > 0) {
-      return '本次未获取到记录（OTM 已导入$otmImported条）';
-    }
+    final String? note = otmImportNote;
+    if (note != null) return '本次未获取到记录（$note）';
     return '本次未获取到记录';
   }
 }
