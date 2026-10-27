@@ -137,21 +137,31 @@ class SyncSummary {
   /// 服务端有数据、但没能进入同步的条数（范围外 + 无效时间）。
   int get filteredOut => outOfRange + invalidRecords;
 
-  /// OTM 预导入的补充说明（无异常状态时为 `null`）。
+  /// OTM 预导入的补充说明；失败优先（失败时只报失败、不报计数：多轮导入可能
+  /// 「先导入若干条、下一轮失败」，两个结论同屏会自相矛盾）。
   ///
-  /// 失败时只报失败、不报计数：多轮导入可能「先导入若干条、下一轮失败」，
-  /// 两个结论同屏会自相矛盾。
-  String? get otmImportNote {
-    if (otmImportError.isNotEmpty) return 'OTM 导入失败：$otmImportError';
-    if (otmImported > 0) return 'OTM 导入$otmImported条';
+  /// 单实现：[SyncResultBanner] 也走这里，避免两份复制实现将来漂移。
+  static String? otmImportNoteOf({
+    required int imported,
+    required String error,
+  }) {
+    if (error.isNotEmpty) return 'OTM 导入失败：$error';
+    if (imported > 0) return 'OTM 导入$imported条';
     return null;
   }
 
+  String? get otmImportNote =>
+      otmImportNoteOf(imported: otmImported, error: otmImportError);
+
   /// 一条记录都没取到时弹窗的标题。
   ///
-  /// 导入失败也会导致列表恒空，此时必须把原因说在标题上，
-  /// 不能再让用户以为「OneLap 就是没记录」。
-  String get emptyResultTitle => otmImportError.isNotEmpty
-      ? '本次未获取到记录（OTM 导入失败：$otmImportError）'
-      : 'OneLap 暂无该时段的记录';
+  /// 只有服务端真的返回 0 条时，空列表才可能是导入失败造成的；
+  /// 若服务端返回过记录（全被范围/解析过滤），归因于导入就是错的。
+  String get emptyResultTitle {
+    final String? note = otmImportNote;
+    if (serverReturned == 0 && note != null) {
+      return '本次未获取到记录（$note）';
+    }
+    return 'OneLap 暂无该时段的记录';
+  }
 }

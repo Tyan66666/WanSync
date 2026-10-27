@@ -216,26 +216,25 @@ class SyncResultBanner {
 
   /// 概览行文案
   String get summaryLine {
+    final String? note = otmImportNote;
     if (fetched == 0 && serverReturned > 0) {
-      return '共获取$serverReturned条，均未进入同步';
+      // 这个早退分支同样要带诊断：否则历史列表里看不到导入失败。
+      return '共获取$serverReturned条，均未进入同步'
+          '${note == null ? '' : '（$note）'}';
     }
     final StringBuffer buffer = StringBuffer(
       '共获取$fetched条，$deduped条已跳过，$pending条需同步',
     );
     if (outOfRange > 0) buffer.write('，$outOfRange条早于范围');
     if (invalidRecords > 0) buffer.write('，$invalidRecords条时间无效');
-    final String? note = otmImportNote;
     if (note != null) buffer.write('，$note');
     return buffer.toString();
   }
 
-  /// OTM 预导入的补充说明（与 [SyncSummary.otmImportNote] 同一口径：
+  /// OTM 预导入的补充说明（与 [SyncSummary.otmImportNote] 同一实现：
   /// 失败优先，失败时不再报计数）。
-  String? get otmImportNote {
-    if (otmImportError.isNotEmpty) return 'OTM 导入失败：$otmImportError';
-    if (otmImported > 0) return 'OTM 导入$otmImported条';
-    return null;
-  }
+  String? get otmImportNote =>
+      SyncSummary.otmImportNoteOf(imported: otmImported, error: otmImportError);
 
   /// 简要时间标签（用于列表显示）
   String get timeLabel {

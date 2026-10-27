@@ -346,7 +346,10 @@ class OneLapClient {
       // 懒登录失败抛的是普通 Exception（`_cacheAuthFromLoginPayload`），不是
       // DioException：这里不吞掉它（登录失败本就无法同步），但先记下原因再抛，
       // 否则日志里同样什么都没有。
-      _lastImportError = '登录或认证失败';
+      //
+      // 归因前提：`_runOtmImport` 的解析全用类型守卫（`is! Map` / `is int`），
+      // 不会抛异常，因此能走到这里的只可能是 login 阶段。
+      _lastImportError = '登录失败';
       debugPrint('[OneLap] OTM 预导入失败（$_lastImportError）：$e');
       rethrow;
     }

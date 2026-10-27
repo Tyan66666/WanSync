@@ -2660,6 +2660,86 @@ void main() {
       expect(query.otmImportError, '响应缺少 sync 计数');
     });
 
+    test('explains a response with a non-int status code', () async {
+      final OneLapClient client = buildClient((options) async {
+        final String url = options.uri.toString();
+        if (url == 'http://example.com/api/login') return loginBody();
+        if (url ==
+            'https://otm.onelap.cn/api/otm/ride_record/capability_list') {
+          // 服务端可控的 String 不得直接插进用户可见文案。
+          return jsonBody({'code': '500 <html>', 'msg': 'boom'});
+        }
+        return jsonBody({
+          'code': 200,
+          'data': {'list': <dynamic>[]},
+        });
+      });
+
+      final OneLapActivityQuery query = await client.fetchActivities(
+        since: DateTime(2026, 10, 21),
+      );
+
+      expect(query.otmImportError, '接口返回异常状态');
+      expect(query.otmImportError, isNot(contains('<html>')));
+    });
+
+    test('explains a response that is not a map', () async {
+      final OneLapClient client = buildClient((options) async {
+        final String url = options.uri.toString();
+        if (url == 'http://example.com/api/login') return loginBody();
+        if (url ==
+            'https://otm.onelap.cn/api/otm/ride_record/capability_list') {
+          return jsonBody(<dynamic>[1, 2, 3]);
+        }
+        return jsonBody({
+          'code': 200,
+          'data': {'list': <dynamic>[]},
+        });
+      });
+
+      final OneLapActivityQuery query = await client.fetchActivities(
+        since: DateTime(2026, 10, 21),
+      );
+
+      expect(query.otmImportError, '响应格式无法解析');
+    });
+
+    test('sends an empty uid when the login payload has none', () async {
+      final List<Map<String, dynamic>> bodies = <Map<String, dynamic>>[];
+      final OneLapClient client = buildClient((options) async {
+        final String url = options.uri.toString();
+        if (url == 'http://example.com/api/login') {
+          return jsonBody({
+            'code': 200,
+            'data': {
+              'token': 'otm-token',
+              'refresh_token': 'refresh-token',
+              // 缺 userinfo：uid 无处可取，应退化为空串。
+            },
+          });
+        }
+        if (url ==
+            'https://otm.onelap.cn/api/otm/ride_record/capability_list') {
+          bodies.add(Map<String, dynamic>.from(options.data as Map));
+          return jsonBody({
+            'code': 200,
+            'data': {
+              'sync': {'inserted': 0, 'total': 20},
+            },
+          });
+        }
+        return jsonBody({
+          'code': 200,
+          'data': {'list': <dynamic>[]},
+        });
+      });
+
+      await client.fetchActivities(since: DateTime(2026, 10, 21));
+
+      // 与已知 uid 的用例对照：拿不到就退化成空串，不阻断导入。
+      expect(bodies.single['uid'], '');
+    });
+
     test(
       'does not report import status on a query that skipped the import',
       () async {
@@ -2705,7 +2785,7 @@ void main() {
           throwsA(anything),
         );
         // 登录失败仍然中断同步（行为不变），但原因不能再是空白。
-        expect(client.lastImportError, '登录或认证失败');
+        expect(client.lastImportError, '登录失败');
       },
     );
   });

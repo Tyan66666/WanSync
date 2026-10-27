@@ -179,6 +179,7 @@ void main() {
       expect(banner.summaryLine, contains('OTM 导入失败：HTTP 500'));
       expect(banner.summaryLine, isNot(contains('OTM 导入20条')));
       expect(summary.otmImportNote, 'OTM 导入失败：HTTP 500');
+      expect(summary.emptyResultTitle, '本次未获取到记录（OTM 导入失败：HTTP 500）');
     });
 
     test('old persisted JSON without OTM import fields still parses', () {
@@ -234,17 +235,77 @@ void main() {
       expect(banner.summaryLine, contains('OTM 导入失败：HTTP 500'));
     });
 
-    test('emptyResultTitle stays neutral while the import succeeded', () {
-      const SyncSummary summary = SyncSummary(
+    test(
+      'emptyResultTitle carries the note only when the server sent nothing',
+      () {
+        const SyncSummary imported = SyncSummary(
+          fetched: 0,
+          deduped: 0,
+          success: 0,
+          failed: 0,
+          otmImported: 3,
+        );
+
+        expect(imported.otmImportNote, 'OTM 导入3条');
+        expect(imported.emptyResultTitle, '本次未获取到记录（OTM 导入3条）');
+
+        // 服务端返回过记录（全被过滤）：空列表不是导入造成的，不能归因于导入。
+        const SyncSummary filtered = SyncSummary(
+          fetched: 0,
+          deduped: 0,
+          success: 0,
+          failed: 0,
+          serverReturned: 3,
+          outOfRange: 3,
+          otmImportError: 'HTTP 500',
+        );
+
+        expect(filtered.emptyResultTitle, 'OneLap 暂无该时段的记录');
+      },
+    );
+
+    test('banner and summary never disagree about the import note', () {
+      const List<SyncSummary> cases = <SyncSummary>[
+        SyncSummary(
+          fetched: 0,
+          deduped: 0,
+          success: 0,
+          failed: 0,
+          otmImportError: 'HTTP 500',
+        ),
+        SyncSummary(
+          fetched: 0,
+          deduped: 0,
+          success: 0,
+          failed: 0,
+          otmImported: 20,
+        ),
+        SyncSummary(fetched: 0, deduped: 0, success: 0, failed: 0),
+      ];
+
+      for (final SyncSummary summary in cases) {
+        final SyncResultBanner banner = SyncResultBanner.fromSyncSummary(
+          summary,
+        );
+        expect(banner.otmImportNote, summary.otmImportNote);
+      }
+    });
+
+    test('the all-filtered summary line keeps the import note', () {
+      final SyncSummary summary = const SyncSummary(
         fetched: 0,
         deduped: 0,
         success: 0,
         failed: 0,
-        otmImported: 3,
+        serverReturned: 3,
+        outOfRange: 3,
+        otmImportError: 'HTTP 500',
       );
 
-      expect(summary.otmImportNote, 'OTM 导入3条');
-      expect(summary.emptyResultTitle, 'OneLap 暂无该时段的记录');
+      final SyncResultBanner banner = SyncResultBanner.fromSyncSummary(summary);
+
+      expect(banner.summaryLine, contains('共获取3条'));
+      expect(banner.summaryLine, contains('OTM 导入失败：HTTP 500'));
     });
   });
 }
