@@ -2284,6 +2284,228 @@ void main() {
         expect(bodies[1]['page'], 2);
       },
     );
+
+    test(
+      'imports the newest OneLap records into OTM before querying the list',
+      () async {
+        final List<String> requests = <String>[];
+        final List<Object?> importAuthHeaders = <Object?>[];
+        final List<Map<String, dynamic>> importBodies =
+            <Map<String, dynamic>>[];
+
+        final OneLapClient client = buildClient((options) async {
+          final String url = options.uri.toString();
+          requests.add('${options.method} $url');
+          if (url == 'http://example.com/api/login') {
+            return jsonBody({
+              'code': 200,
+              'data': [
+                {
+                  'userinfo': {'uid': 399666, 'nickname': 'rider'},
+                  'token': 'otm-token',
+                  'refresh_token': 'refresh-token',
+                },
+              ],
+            });
+          }
+          if (url ==
+              'https://otm.onelap.cn/api/otm/ride_record/capability_list') {
+            importAuthHeaders.add(options.headers['Authorization']);
+            importBodies.add(
+              Map<String, dynamic>.from(options.data as Map<dynamic, dynamic>),
+            );
+            return jsonBody({
+              'code': 200,
+              'data': {
+                'error': 'success',
+                'data': {'list': <dynamic>[]},
+                'sync': {'total': 20, 'inserted': 2, 'skipped': 18},
+              },
+            });
+          }
+          if (url == 'https://otm.onelap.cn/api/otm/ride_record/list') {
+            return jsonBody({
+              'code': 200,
+              'data': {'list': <dynamic>[]},
+            });
+          }
+          return ResponseBody.fromString('not found', 404);
+        });
+
+        await client.fetchActivities(since: DateTime(2026, 10, 21));
+
+        expect(
+          requests,
+          contains(
+            'POST https://otm.onelap.cn/api/otm/ride_record/capability_list',
+          ),
+        );
+        expect(
+          requests.indexOf(
+            'POST https://otm.onelap.cn/api/otm/ride_record/capability_list',
+          ),
+          lessThan(
+            requests.indexOf(
+              'POST https://otm.onelap.cn/api/otm/ride_record/list',
+            ),
+          ),
+        );
+        expect(importBodies.single['uid'], '399666');
+        expect(importAuthHeaders.single, 'otm-token');
+        expect(client.lastImportedCount, 2);
+      },
+    );
+
+    test('imports at most once per client instance', () async {
+      int importCalls = 0;
+
+      final OneLapClient client = buildClient((options) async {
+        final String url = options.uri.toString();
+        if (url == 'http://example.com/api/login') return loginBody();
+        if (url ==
+            'https://otm.onelap.cn/api/otm/ride_record/capability_list') {
+          importCalls++;
+          return jsonBody({
+            'code': 200,
+            'data': {
+              'sync': {'total': 20, 'inserted': 0, 'skipped': 20},
+            },
+          });
+        }
+        if (url == 'https://otm.onelap.cn/api/otm/ride_record/list') {
+          return jsonBody({
+            'code': 200,
+            'data': {'list': <dynamic>[]},
+          });
+        }
+        return ResponseBody.fromString('not found', 404);
+      });
+
+      await client.fetchActivities(since: DateTime(2026, 10, 21));
+      await client.fetchActivities(since: DateTime(2026, 10, 21));
+
+      expect(importCalls, 1);
+    });
+
+    test(
+      'asks for another import round while the window is saturated',
+      () async {
+        int importCalls = 0;
+
+        final OneLapClient client = buildClient((options) async {
+          final String url = options.uri.toString();
+          if (url == 'http://example.com/api/login') return loginBody();
+          if (url ==
+              'https://otm.onelap.cn/api/otm/ride_record/capability_list') {
+            importCalls++;
+            final int inserted = importCalls == 1 ? 20 : 0;
+            return jsonBody({
+              'code': 200,
+              'data': {
+                'sync': {
+                  'total': 20,
+                  'inserted': inserted,
+                  'skipped': 20 - inserted,
+                },
+              },
+            });
+          }
+          if (url == 'https://otm.onelap.cn/api/otm/ride_record/list') {
+            return jsonBody({
+              'code': 200,
+              'data': {'list': <dynamic>[]},
+            });
+          }
+          return ResponseBody.fromString('not found', 404);
+        });
+
+        await client.fetchActivities(since: DateTime(2026, 10, 21));
+
+        expect(importCalls, 2);
+        expect(client.lastImportedCount, 20);
+      },
+    );
+
+    test('caps OTM import rounds when the window stays saturated', () async {
+      int importCalls = 0;
+
+      final OneLapClient client = buildClient((options) async {
+        final String url = options.uri.toString();
+        if (url == 'http://example.com/api/login') return loginBody();
+        if (url ==
+            'https://otm.onelap.cn/api/otm/ride_record/capability_list') {
+          importCalls++;
+          return jsonBody({
+            'code': 200,
+            'data': {
+              'sync': {'total': 20, 'inserted': 20, 'skipped': 0},
+            },
+          });
+        }
+        if (url == 'https://otm.onelap.cn/api/otm/ride_record/list') {
+          return jsonBody({
+            'code': 200,
+            'data': {'list': <dynamic>[]},
+          });
+        }
+        return ResponseBody.fromString('not found', 404);
+      });
+
+      await client.fetchActivities(since: DateTime(2026, 10, 21));
+
+      expect(importCalls, 3);
+      expect(client.lastImportedCount, 60);
+    });
+
+    test('keeps listing records when the OTM import request fails', () async {
+      final OneLapClient client = buildClient((options) async {
+        final String url = options.uri.toString();
+        if (url == 'http://example.com/api/login') return loginBody();
+        if (url ==
+            'https://otm.onelap.cn/api/otm/ride_record/capability_list') {
+          return ResponseBody.fromString('boom', 500);
+        }
+        if (url == 'https://otm.onelap.cn/api/otm/ride_record/list') {
+          return jsonBody({
+            'code': 200,
+            'data': {
+              'list': [
+                {'id': 'a', 'start_riding_time': '2026-10-24 11:13:43'},
+              ],
+            },
+          });
+        }
+        if (url.contains('/analysis/')) return detailBody();
+        return ResponseBody.fromString('not found', 404);
+      });
+
+      final OneLapActivityQuery query = await client.fetchActivities(
+        since: DateTime(2026, 10, 21),
+      );
+
+      expect(query.activities.single.activityId, 'a');
+      expect(client.lastImportedCount, 0);
+    });
+
+    test(
+      'throws OnelapRiskControlError when the OTM import trips risk control',
+      () async {
+        final OneLapClient client = buildClient((options) async {
+          final String url = options.uri.toString();
+          if (url == 'http://example.com/api/login') return loginBody();
+          if (url ==
+              'https://otm.onelap.cn/api/otm/ride_record/capability_list') {
+            return jsonBody({'code': -2, 'msg': 'risk control'});
+          }
+          return ResponseBody.fromString('not found', 404);
+        });
+
+        await expectLater(
+          client.fetchActivities(since: DateTime(2026, 10, 21)),
+          throwsA(isA<OnelapRiskControlError>()),
+        );
+      },
+    );
   });
 
   group('OneLapClient.downloadFit', () {

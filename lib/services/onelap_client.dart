@@ -94,6 +94,12 @@ class OneLapClient {
   late final Dio _dio;
   String? _token;
   String? _refreshToken;
+  String? _uid;
+  bool _otmImportDone = false;
+  int _lastImportedCount = 0;
+
+  /// 单次同步最多追问几轮 OTM 导入（每轮候选窗口 20 条）。
+  static const int _otmImportMaxRounds = 3;
 
   OneLapClient({
     required this.baseUrl,
@@ -155,6 +161,9 @@ class OneLapClient {
     if (maxResults == 0) {
       return OneLapActivityQuery(rangeStart: rangeStart, rangeEnd: rangeEnd);
     }
+
+    // 必须先让 OTM 把 App 侧最新记录导入，否则列表接口看不到新骑行。
+    await importLatestRecords();
 
     final List<dynamic> items = <dynamic>[];
     final int requestPageSize = maxResults < _pageSize ? maxResults : _pageSize;
@@ -279,6 +288,75 @@ class OneLapClient {
       rangeEnd: rangeEnd,
     );
   }
+
+  /// 让 OTM 把 OneLap App 侧的最新骑行记录导入到 OTM 记录库。
+  ///
+  /// 背景（实测 2026-10-27）：网页版每次进入页面都会调
+  /// `POST /api/otm/ride_record/capability_list {uid}`（见 otm 前端
+  /// `index-DMvdeOia.js` 的启动序列），其响应体带
+  /// `data.sync = {total, inserted, skipped, restored, chart_info_filled, invalid, failed}`，
+  /// 即一次「最新 20 条记录」的导入作业；而
+  /// `POST /api/otm/ride_record/list` 只能看到**已经导入**的记录。
+  /// 因此不先调这个接口时，刚骑完的新记录在 OTM 里根本不存在，同步只会拿到
+  /// 「没有需要同步的了」。
+  ///
+  /// 导入在服务端同步完成后再返回计数，所以返回后立刻拉列表即可看到新记录。
+  /// 本方法为幂等操作（重复调用只会 `skipped`），每个 client 实例只执行一次。
+  /// 除风控外，失败不阻断同步：真正的接口错误会由后面的列表请求抛出。
+  Future<void> importLatestRecords() async {
+    if (_otmImportDone) return;
+    _otmImportDone = true;
+    try {
+      // 单次导入的候选窗口实测固定为 20 条（多次响应里 `sync.total` 都是 20）。
+      // 若一轮就把窗口填满（`inserted == total`），说明可能还有更早的记录没导入，
+      // 再追问最多 [_otmImportMaxRounds] - 1 轮；窗口已全部存在时下一轮
+      // `inserted` 会变 0，循环自然结束。60 条覆盖「长期没同步后一次性补齐」。
+      for (int round = 0; round < _otmImportMaxRounds; round++) {
+        final (int inserted, int total) = await _runOtmImport();
+        _lastImportedCount += inserted;
+        if (inserted == 0 || inserted < total) break;
+      }
+    } on OnelapRiskControlError {
+      rethrow;
+    } on DioException {
+      // 预热失败不阻断同步。
+    }
+  }
+
+  /// 触发一次 OTM 侧导入，返回 `(inserted, total)`。
+  Future<(int, int)> _runOtmImport() async {
+    final Response<dynamic> response = await _withAuthenticatedOtmRequest(
+      (String token) => _dio.post<dynamic>(
+        '$otmBaseUrl/api/otm/ride_record/capability_list',
+        data: <String, dynamic>{'uid': _uid ?? ''},
+        options: Options(headers: <String, String>{'Authorization': token}),
+      ),
+    );
+
+    final dynamic payload = response.data;
+    if (payload is! Map<String, dynamic>) return (0, 0);
+
+    final String message =
+        '${payload['msg'] ?? payload['message'] ?? payload['error'] ?? 'unknown'}';
+    if (payload['code'] != 200) {
+      if (_looksLikeRiskControl(payload, message)) {
+        throw OnelapRiskControlError(message);
+      }
+      return (0, 0);
+    }
+
+    final dynamic data = payload['data'];
+    if (data is! Map) return (0, 0);
+    final dynamic sync = data['sync'];
+    if (sync is! Map) return (0, 0);
+
+    final dynamic inserted = sync['inserted'];
+    final dynamic total = sync['total'];
+    return (inserted is int ? inserted : 0, total is int ? total : 0);
+  }
+
+  /// 上一次 [importLatestRecords] 实际导入的记录数（诊断用）。
+  int get lastImportedCount => _lastImportedCount;
 
   Future<_ActivitiesPage> _fetchActivitiesPayload({
     required int page,
@@ -989,6 +1067,14 @@ class OneLapClient {
 
     _token = token;
     _refreshToken = refreshToken;
+
+    // `capability_list` 需要账号 uid 才能定位到「要导入哪个账号的记录」。
+    // 登录响应把它放在 `data.userinfo.uid`（data 也可能是包了一层的数组）。
+    final Object? rawUserinfo = data['userinfo'];
+    if (rawUserinfo is Map) {
+      final String uid = '${rawUserinfo['uid'] ?? ''}'.trim();
+      if (uid.isNotEmpty) _uid = uid;
+    }
   }
 
   List<String> _buildDownloadUrls(String fitUrl, {OneLapActivity? activity}) {
