@@ -4,6 +4,7 @@ import 'dart:io';
 
 import 'package:dio/dio.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:onelap_strava_sync/services/settings_service.dart';
 import 'package:onelap_strava_sync/services/xingzhe_client.dart';
 
 class _FakeHttpClientAdapter implements HttpClientAdapter {
@@ -22,6 +23,34 @@ class _FakeHttpClientAdapter implements HttpClientAdapter {
   ) {
     return handler(options);
   }
+}
+
+class _FakeSettingsStore implements SettingsStore {
+  _FakeSettingsStore([Map<String, String>? initial])
+    : values = <String, String>{...?initial};
+
+  final Map<String, String> values;
+
+  @override
+  Future<Map<String, String>> readAll() async => Map<String, String>.of(values);
+
+  @override
+  Future<String?> read({required String key}) async => values[key];
+
+  @override
+  Future<void> write({required String key, required String value}) async {
+    values[key] = value;
+  }
+}
+
+ResponseBody _jsonResponse(Map<String, dynamic> body, int statusCode) {
+  return ResponseBody.fromString(
+    jsonEncode(body),
+    statusCode,
+    headers: <String, List<String>>{
+      Headers.contentTypeHeader: <String>['application/json'],
+    },
+  );
 }
 
 void main() {
@@ -398,5 +427,256 @@ void main() {
         );
       },
     );
+  });
+
+  group('XingzheClient session auto refresh', () {
+    Future<File> createFitFile(String prefix) async {
+      final Directory tempDir = await Directory.systemTemp.createTemp(prefix);
+      final File file = File('${tempDir.path}/activity.fit');
+      await file.writeAsBytes(const <int>[1, 2, 3]);
+      addTearDown(() async {
+        if (await tempDir.exists()) await tempDir.delete(recursive: true);
+      });
+      return file;
+    }
+
+    test('自动重新登录后重传成功，并落盘新的 sessionid', () async {
+      final File fitFile = await createFitFile('xz-refresh-ok-');
+      final _FakeSettingsStore store = _FakeSettingsStore(<String, String>{
+        SettingsService.keyXingzheSessionId: 'stale-session',
+      });
+
+      int uploadCalls = 0;
+      int loginCalls = 0;
+      final Dio dio = Dio();
+      dio.httpClientAdapter = _FakeHttpClientAdapter((options) async {
+        if (options.uri.path.contains('/user/login/')) {
+          loginCalls += 1;
+          return ResponseBody.fromString(
+            jsonEncode(<String, dynamic>{
+              'code': 0,
+              'data': <String, dynamic>{'id': 1},
+            }),
+            200,
+            headers: <String, List<String>>{
+              Headers.contentTypeHeader: <String>['application/json'],
+              'set-cookie': <String>[
+                'sessionid=fresh-session; Path=/; HttpOnly',
+              ],
+            },
+          );
+        }
+
+        uploadCalls += 1;
+        final String cookie = '${options.headers['Cookie'] ?? ''}';
+        if (!cookie.contains('fresh-session')) {
+          return _jsonResponse(<String, dynamic>{
+            'code': 401,
+            'data': <String, dynamic>{},
+            'msg': 'Authentication credentials were not provided.',
+          }, 401);
+        }
+        return _jsonResponse(<String, dynamic>{
+          'code': 0,
+          'data': <String, dynamic>{'workout_id': 4321},
+        }, 200);
+      });
+
+      final XingzheClient client = XingzheClient(
+        username: 'user@example.com',
+        password: 'pass',
+        sessionId: 'stale-session',
+        dio: dio,
+        settingsService: SettingsService(store: store),
+      );
+
+      final XingzheUploadFitResult result = await client.uploadFitDetailed(
+        fitFile,
+        retries: 1,
+      );
+
+      expect(result.uploadId, 4321);
+      expect(client.sessionId, 'fresh-session');
+      expect(loginCalls, 1);
+      // 首次 401 + 刷新会话后重传，共两次上传请求。
+      expect(uploadCalls, 2);
+      expect(
+        store.values[SettingsService.keyXingzheSessionId],
+        'fresh-session',
+      );
+      expect(
+        dio.options.headers['Cookie'],
+        contains('sessionid=fresh-session'),
+      );
+    });
+
+    test('连续两次 401 只自动登录一次，随后报永久错误', () async {
+      final File fitFile = await createFitFile('xz-refresh-fail-');
+      final _FakeSettingsStore store = _FakeSettingsStore();
+
+      int uploadCalls = 0;
+      int loginCalls = 0;
+      final Dio dio = Dio();
+      dio.httpClientAdapter = _FakeHttpClientAdapter((options) async {
+        if (options.uri.path.contains('/user/login/')) {
+          loginCalls += 1;
+          return ResponseBody.fromString(
+            jsonEncode(<String, dynamic>{
+              'code': 0,
+              'data': <String, dynamic>{'id': 1},
+            }),
+            200,
+            headers: <String, List<String>>{
+              Headers.contentTypeHeader: <String>['application/json'],
+              'set-cookie': <String>['sessionid=always-rejected; Path=/'],
+            },
+          );
+        }
+        uploadCalls += 1;
+        return _jsonResponse(<String, dynamic>{
+          'code': 401,
+          'data': <String, dynamic>{},
+          'msg': 'Authentication credentials were not provided.',
+        }, 401);
+      });
+
+      final XingzheClient client = XingzheClient(
+        username: 'user@example.com',
+        password: 'pass',
+        sessionId: 'stale-session',
+        dio: dio,
+        settingsService: SettingsService(store: store),
+      );
+
+      await expectLater(
+        () => client.uploadFitDetailed(fitFile, retries: 1),
+        throwsA(
+          isA<XingzhePermanentError>().having(
+            (XingzhePermanentError error) => error.message,
+            'message',
+            contains('自动重新登录后仍被拒绝'),
+          ),
+        ),
+      );
+      expect(loginCalls, 1);
+      expect(uploadCalls, 2);
+    });
+
+    test('未保存用户名/密码时不做登录尝试，直接报永久错误', () async {
+      final File fitFile = await createFitFile('xz-refresh-nocreds-');
+
+      int loginCalls = 0;
+      final Dio dio = Dio();
+      dio.httpClientAdapter = _FakeHttpClientAdapter((options) async {
+        if (options.uri.path.contains('/user/login/')) {
+          loginCalls += 1;
+        }
+        return _jsonResponse(<String, dynamic>{
+          'code': 401,
+          'data': <String, dynamic>{},
+          'msg': 'Authentication credentials were not provided.',
+        }, 401);
+      });
+
+      final XingzheClient client = XingzheClient(
+        username: '',
+        password: '',
+        dio: dio,
+        settingsService: SettingsService(store: _FakeSettingsStore()),
+      );
+
+      await expectLater(
+        () => client.uploadFitDetailed(fitFile, retries: 1),
+        throwsA(
+          isA<XingzhePermanentError>().having(
+            (XingzhePermanentError error) => error.message,
+            'message',
+            contains('无法自动重新登录'),
+          ),
+        ),
+      );
+      expect(loginCalls, 0);
+    });
+
+    test('400 之类的非认证错误不触发重新登录', () async {
+      final File fitFile = await createFitFile('xz-no-relogin-');
+
+      int loginCalls = 0;
+      final Dio dio = Dio();
+      dio.httpClientAdapter = _FakeHttpClientAdapter((options) async {
+        if (options.uri.path.contains('/user/login/')) {
+          loginCalls += 1;
+        }
+        return _jsonResponse(<String, dynamic>{
+          'code': 1001,
+          'msg': 'invalid fit',
+        }, 400);
+      });
+
+      final XingzheClient client = XingzheClient(
+        username: 'user@example.com',
+        password: 'pass',
+        dio: dio,
+        settingsService: SettingsService(store: _FakeSettingsStore()),
+      );
+
+      await expectLater(
+        () => client.uploadFitDetailed(fitFile, retries: 1),
+        throwsA(isA<XingzhePermanentError>()),
+      );
+      expect(loginCalls, 0);
+    });
+
+    test('body code 401（HTTP 200）也按会话失效处理', () async {
+      final File fitFile = await createFitFile('xz-body-401-');
+
+      int uploadCalls = 0;
+      int loginCalls = 0;
+      final Dio dio = Dio();
+      dio.httpClientAdapter = _FakeHttpClientAdapter((options) async {
+        if (options.uri.path.contains('/user/login/')) {
+          loginCalls += 1;
+          return ResponseBody.fromString(
+            jsonEncode(<String, dynamic>{
+              'code': 0,
+              'data': <String, dynamic>{'id': 1},
+            }),
+            200,
+            headers: <String, List<String>>{
+              Headers.contentTypeHeader: <String>['application/json'],
+              'set-cookie': <String>['sessionid=body-401-fresh; Path=/'],
+            },
+          );
+        }
+        uploadCalls += 1;
+        if (uploadCalls == 1) {
+          return _jsonResponse(<String, dynamic>{
+            'code': 401,
+            'data': <String, dynamic>{},
+            'msg': 'Authentication credentials were not provided.',
+          }, 200);
+        }
+        return _jsonResponse(<String, dynamic>{
+          'code': 0,
+          'data': <String, dynamic>{'workout_id': 99},
+        }, 200);
+      });
+
+      final XingzheClient client = XingzheClient(
+        username: 'user@example.com',
+        password: 'pass',
+        dio: dio,
+        settingsService: SettingsService(store: _FakeSettingsStore()),
+      );
+
+      final XingzheUploadFitResult result = await client.uploadFitDetailed(
+        fitFile,
+        retries: 1,
+      );
+
+      expect(result.uploadId, 99);
+      expect(loginCalls, 1);
+      expect(uploadCalls, 2);
+    });
   });
 }

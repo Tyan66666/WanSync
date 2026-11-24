@@ -9,9 +9,27 @@ import 'package:http_parser/http_parser.dart';
 
 class XingzheRetriableError implements Exception {
   final String message;
-  const XingzheRetriableError(this.message);
+
+  /// 服务端状态码（5xx 等可重试错误时可用）。
+  final int? statusCode;
+
+  const XingzheRetriableError(this.message, {this.statusCode});
   @override
   String toString() => 'XingzheRetriableError: $message';
+}
+
+/// 行者登录态失效（session 过期 / 被踢下线 / 从未登录）。
+///
+/// 行者 API 在未认证时返回 HTTP 401，响应体为
+/// `{"code":401,"data":{},"msg":"Authentication credentials were not provided."}`。
+/// 这是内部信号：`uploadFitDetailed` 捕获后会尝试自动重新登录并重传。
+class _XingzheSessionExpiredError implements Exception {
+  const _XingzheSessionExpiredError(this.detail);
+
+  final String detail;
+
+  @override
+  String toString() => '_XingzheSessionExpiredError: $detail';
 }
 
 class XingzhePermanentError implements Exception {
@@ -39,14 +57,20 @@ class XingzheClient {
   String username;
   String password;
   String? authToken;
+  String? sessionId;
   final Dio _dio;
+  final SettingsService _settings;
+
+  /// 单飞：并发上传同时撞到会话失效时共用同一次重新登录。
+  Future<void>? _sessionRefresh;
 
   XingzheClient({
     required this.username,
     required this.password,
     this.authToken,
+    this.sessionId,
     Dio? dio,
-    String? sessionId,
+    SettingsService? settingsService,
   }) : _dio =
            dio ??
            Dio(
@@ -59,10 +83,12 @@ class XingzheClient {
                  'Accept-Encoding': 'gzip, deflate',
                },
              ),
-           ) {
-    if (sessionId != null && sessionId.isNotEmpty) {
+           ),
+       _settings = settingsService ?? SettingsService() {
+    final String? currentSessionId = sessionId;
+    if (currentSessionId != null && currentSessionId.isNotEmpty) {
       _dio.options.headers['Cookie'] =
-          'sessionid=$sessionId; _XingzheWeb_Token=true';
+          'sessionid=$currentSessionId; _XingzheWeb_Token=true';
     }
   }
 
@@ -80,6 +106,7 @@ class XingzheClient {
       password: password,
       dio: dio,
       sessionId: sessionId,
+      settingsService: settingsService,
     );
   }
 
@@ -166,7 +193,10 @@ WpJmn7JfXB4HTMWjPVoyRZmSYjW4L8GrWmh51Qj7DwpTADadF3aq04o+s1b8LXJa
     required String username,
     required String password,
     Dio? dio,
+    SettingsService? settingsService,
   }) async {
+    final SettingsService effectiveSettings =
+        settingsService ?? SettingsService();
     final dioInstance =
         dio ??
         Dio(
@@ -214,12 +244,16 @@ WpJmn7JfXB4HTMWjPVoyRZmSYjW4L8GrWmh51Qj7DwpTADadF3aq04o+s1b8LXJa
     if (extractedSessionId.isNotEmpty) {
       dioInstance.options.headers['Cookie'] =
           'sessionid=$extractedSessionId; _XingzheWeb_Token=true';
-      final settingsService = SettingsService();
-      await settingsService.saveSettings({
-        SettingsService.keyXingzheSessionId: extractedSessionId,
-        SettingsService.keyXingzheUsername: username,
-        SettingsService.keyXingzhePassword: password,
-      });
+      try {
+        await effectiveSettings.saveSettings({
+          SettingsService.keyXingzheSessionId: extractedSessionId,
+          SettingsService.keyXingzheUsername: username,
+          SettingsService.keyXingzhePassword: password,
+        });
+      } on Exception {
+        // 会话已经可用，落盘失败不该让登录整体失败；最坏情况是下次启动
+        // 读到旧 sessionid，再走一次自动重新登录。
+      }
     }
 
     return XingzheClient(
@@ -228,6 +262,7 @@ WpJmn7JfXB4HTMWjPVoyRZmSYjW4L8GrWmh51Qj7DwpTADadF3aq04o+s1b8LXJa
       authToken: null,
       dio: dioInstance,
       sessionId: extractedSessionId.isNotEmpty ? extractedSessionId : null,
+      settingsService: effectiveSettings,
     );
   }
 
@@ -243,7 +278,53 @@ WpJmn7JfXB4HTMWjPVoyRZmSYjW4L8GrWmh51Qj7DwpTADadF3aq04o+s1b8LXJa
   }
 
   Future<void> ensureAuthenticated() async {
-    // 依赖 session 保持认证状态。
+    // 依赖 session 保持认证状态；失效时由上传流程自动重新登录。
+  }
+
+  static bool _isSessionExpiredStatus(int? statusCode) {
+    return statusCode == 401 || statusCode == 403;
+  }
+
+  /// 用已保存的用户名/密码重新登录，刷新同一个 Dio 上的 Cookie 并落盘新的
+  /// sessionid。并发调用共用同一次登录（单飞）。
+  Future<void> _reauthenticateSession() {
+    return _sessionRefresh ??= _performReauthentication().whenComplete(() {
+      _sessionRefresh = null;
+    });
+  }
+
+  Future<void> _performReauthentication() async {
+    final String effectiveUsername = username.trim();
+    final String effectivePassword = password;
+
+    if (effectiveUsername.isEmpty || effectivePassword.isEmpty) {
+      throw const XingzhePermanentError(
+        '行者会话已失效(401)，且未保存行者用户名/密码，无法自动重新登录，请在设置 → 行者 中重新登录',
+      );
+    }
+
+    final XingzheClient refreshed;
+    try {
+      refreshed = await XingzheClient.login(
+        username: effectiveUsername,
+        password: effectivePassword,
+        dio: _dio,
+        settingsService: _settings,
+      );
+    } on XingzhePermanentError catch (error) {
+      throw XingzhePermanentError(
+        '行者会话已失效(401)，自动重新登录失败：${error.message}，请在设置 → 行者 中重新登录',
+      );
+    }
+
+    final String? newSessionId = refreshed.sessionId;
+    if (newSessionId == null || newSessionId.isEmpty) {
+      throw const XingzhePermanentError(
+        '行者会话已失效(401)，自动重新登录未拿到新的会话，请在设置 → 行者 中重新登录',
+      );
+    }
+
+    sessionId = newSessionId;
   }
 
   Future<int> uploadFit(File file, {int retries = 3}) async {
@@ -258,142 +339,196 @@ WpJmn7JfXB4HTMWjPVoyRZmSYjW4L8GrWmh51Qj7DwpTADadF3aq04o+s1b8LXJa
     File file, {
     int retries = 3,
   }) async {
-    final String filename = file.path.split('/').last;
+    final int maxAttempts = retries < 1 ? 1 : retries;
+    var sessionRefreshed = false;
 
-    for (var attempt = 1; attempt <= retries; attempt++) {
-      Response response;
+    for (var attempt = 1; attempt <= maxAttempts; attempt++) {
       try {
-        // 计算文件的 MD5 哈希值
-        final fileBytes = await file.readAsBytes();
-        final md5Hash = md5.convert(fileBytes).toString();
-
-        // 构建 FormData
-        final formData = FormData.fromMap({
-          'file_source': 'undefined',
-          'fit_filename': filename,
-          'md5': md5Hash,
-          'name': filename,
-          'sport': '3',
-          'fit_file': await MultipartFile.fromFile(
-            file.path,
-            filename: filename,
-            contentType: MediaType('application', 'octet-stream'),
-          ),
-        });
-
-        // 发送上传请求
-        response = await _dio.post(
-          'https://www.imxingzhe.com/api/v1/fit/upload/',
-          data: formData,
-          options: Options(
-            followRedirects: false,
-            validateStatus: (status) => true,
-          ),
-        );
-      } on DioException catch (e) {
-        final status = e.response?.statusCode ?? 0;
-        if (status >= 500 && attempt < retries) {
-          await Future.delayed(const Duration(seconds: 1));
+        return await _uploadOnce(file);
+      } on _XingzheSessionExpiredError catch (error) {
+        // 行者会话失效（HTTP 401/403）：自动重新登录一次后重传。
+        if (sessionRefreshed) {
+          throw XingzhePermanentError(
+            '行者登录已失效(401)，自动重新登录后仍被拒绝，'
+            '请在设置 → 行者 中重新登录（${error.detail}）',
+          );
+        }
+        sessionRefreshed = true;
+        await _reauthenticateSession();
+        // 刷新会话不该消耗原本的上传重试预算。
+        attempt -= 1;
+        continue;
+      } on XingzheRetriableError catch (error) {
+        // 历史行为保留：5xx 里的 500 也顺手刷新一次会话，但登录失败不阻断
+        // 5xx 本身的重试（真正的登录失效已由上面的 401 分支处理）。
+        if (error.statusCode == 500 && !sessionRefreshed) {
+          sessionRefreshed = true;
+          try {
+            await _reauthenticateSession();
+          } on Exception {
+            // 忽略：5xx 仍是可重试错误，交给下面的重试逻辑。
+          }
+          attempt -= 1;
           continue;
         }
-        if (status >= 500) {
-          throw XingzheRetriableError('xingzhe upload 5xx: $status');
+        if (attempt < maxAttempts) {
+          await Future.delayed(const Duration(seconds: 2));
+          continue;
         }
-        if (status >= 400) {
-          throw XingzhePermanentError(
-            _statusWithDetail(
-              status,
-              e.response?.data is Map<String, dynamic>
-                  ? (e.response?.data as Map<String, dynamic>)['msg']
-                  : e.response?.data,
-              fallback: 'xingzhe upload failed',
-            ),
-          );
-        }
-        rethrow;
-      } catch (e) {
-        rethrow;
-      }
-
-      try {
-        // 5xx 是服务端/网关瞬时错误（含 502 Bad Gateway、503、504 等）。
-        // 注意：本请求使用 validateStatus 始终返回 true，Dio 不会为 5xx
-        // 抛出 DioException，因此重试逻辑必须在此处理，而不是依赖上面的
-        // on DioException 分支（那里的 status >= 500 重试实际上已被绕过）。
-        if (response.statusCode != null && response.statusCode! >= 500) {
-          // 仅 500 可能是会话过期，尝试重新登录以刷新 session。
-          if (response.statusCode == 500) {
-            await login(username: username, password: password, dio: _dio);
-          }
-          if (attempt < retries) {
-            await Future.delayed(const Duration(seconds: 2));
-            continue;
-          }
-          throw XingzheRetriableError(
-            'xingzhe upload 5xx: ${response.statusCode}',
-          );
-        }
-
-        if (response.data is! Map<String, dynamic>) {
-          throw XingzhePermanentError(
-            _statusSummary(
-              response.statusCode,
-              fallback: 'xingzhe upload returned unexpected response type',
-            ),
-          );
-        }
-
-        final payload = response.data as Map<String, dynamic>;
-
-        // 9006 = 文件已上传（幂等成功），从 msg 中提取已存在的 activity_id
-        if (payload['code'] == 9006) {
-          final msg = '${payload['msg'] ?? ''}';
-          final match = RegExp(r'(\d{4,})').firstMatch(msg);
-          final existingId = match != null
-              ? int.tryParse(match.group(1)!) ?? 0
-              : 0;
-          return XingzheUploadFitResult(
-            uploadId: 0,
-            remoteActivityId: existingId > 0 ? existingId : null,
-            alreadyUploaded: true,
-            message: msg,
-          );
-        }
-
-        if (response.statusCode != null && response.statusCode! >= 400) {
-          throw XingzhePermanentError(
-            _statusWithDetail(
-              response.statusCode,
-              payload['msg'],
-              fallback: 'xingzhe upload failed',
-            ),
-          );
-        }
-
-        if (payload['code'] != 0) {
-          throw XingzhePermanentError(
-            _sanitizeDetail(payload['msg'], fallback: 'xingzhe upload failed'),
-          );
-        }
-
-        // 行者上传成功后返回 workout_id，即真实活动 ID
-        final data = payload['data'] as Map<String, dynamic>?;
-        final workoutIdRaw = data?['workout_id'] ?? data?['id'];
-        if (workoutIdRaw == null) {
-          return const XingzheUploadFitResult(uploadId: 0);
-        }
-        final int workoutId = workoutIdRaw is int
-            ? workoutIdRaw
-            : int.tryParse('$workoutIdRaw') ?? 0;
-        return XingzheUploadFitResult(
-          uploadId: workoutId,
-          remoteActivityId: workoutId > 0 ? workoutId : null,
-        );
-      } catch (e) {
         rethrow;
       }
     }
     throw XingzheRetriableError('xingzhe upload exhausted retries');
+  }
+
+  Future<XingzheUploadFitResult> _uploadOnce(File file) async {
+    final String filename = file.path.split('/').last;
+
+    Response response;
+    try {
+      // 计算文件的 MD5 哈希值
+      final fileBytes = await file.readAsBytes();
+      final md5Hash = md5.convert(fileBytes).toString();
+
+      // 构建 FormData
+      final formData = FormData.fromMap({
+        'file_source': 'undefined',
+        'fit_filename': filename,
+        'md5': md5Hash,
+        'name': filename,
+        'sport': '3',
+        'fit_file': await MultipartFile.fromFile(
+          file.path,
+          filename: filename,
+          contentType: MediaType('application', 'octet-stream'),
+        ),
+      });
+
+      // 发送上传请求
+      response = await _dio.post(
+        'https://www.imxingzhe.com/api/v1/fit/upload/',
+        data: formData,
+        options: Options(
+          followRedirects: false,
+          validateStatus: (status) => true,
+        ),
+      );
+    } on DioException catch (e) {
+      final status = e.response?.statusCode ?? 0;
+      if (_isSessionExpiredStatus(status)) {
+        throw _XingzheSessionExpiredError(
+          _statusWithDetail(
+            status,
+            e.response?.data is Map<String, dynamic>
+                ? (e.response?.data as Map<String, dynamic>)['msg']
+                : null,
+            fallback: 'xingzhe session expired',
+          ),
+        );
+      }
+      if (status >= 500) {
+        throw XingzheRetriableError(
+          'xingzhe upload 5xx: $status',
+          statusCode: status,
+        );
+      }
+      if (status >= 400) {
+        throw XingzhePermanentError(
+          _statusWithDetail(
+            status,
+            e.response?.data is Map<String, dynamic>
+                ? (e.response?.data as Map<String, dynamic>)['msg']
+                : e.response?.data,
+            fallback: 'xingzhe upload failed',
+          ),
+        );
+      }
+      rethrow;
+    }
+
+    final int? statusCode = response.statusCode;
+    final Object? responseBody = response.data;
+    final Map<String, dynamic>? body = responseBody is Map<String, dynamic>
+        ? responseBody
+        : null;
+    final int? bodyCode = body?['code'] is num
+        ? (body!['code'] as num).toInt()
+        : null;
+
+    // 会话失效：行者 API 未认证时返回 HTTP 401 + body code 401。
+    if (_isSessionExpiredStatus(statusCode) || bodyCode == 401) {
+      throw _XingzheSessionExpiredError(
+        _statusWithDetail(
+          statusCode,
+          body?['msg'],
+          fallback: 'xingzhe session expired',
+        ),
+      );
+    }
+
+    // 5xx 是服务端/网关瞬时错误（含 502 Bad Gateway、503、504 等）。
+    // 注意：本请求使用 validateStatus 始终返回 true，Dio 不会为 5xx
+    // 抛出 DioException，因此重试逻辑由上层 uploadFitDetailed 处理。
+    if (statusCode != null && statusCode >= 500) {
+      throw XingzheRetriableError(
+        'xingzhe upload 5xx: $statusCode',
+        statusCode: statusCode,
+      );
+    }
+
+    if (body == null) {
+      throw XingzhePermanentError(
+        _statusSummary(
+          statusCode,
+          fallback: 'xingzhe upload returned unexpected response type',
+        ),
+      );
+    }
+
+    final payload = body;
+
+    // 9006 = 文件已上传（幂等成功），从 msg 中提取已存在的 activity_id
+    if (payload['code'] == 9006) {
+      final msg = '${payload['msg'] ?? ''}';
+      final match = RegExp(r'(\d{4,})').firstMatch(msg);
+      final existingId = match != null ? int.tryParse(match.group(1)!) ?? 0 : 0;
+      return XingzheUploadFitResult(
+        uploadId: 0,
+        remoteActivityId: existingId > 0 ? existingId : null,
+        alreadyUploaded: true,
+        message: msg,
+      );
+    }
+
+    if (statusCode != null && statusCode >= 400) {
+      throw XingzhePermanentError(
+        _statusWithDetail(
+          statusCode,
+          payload['msg'],
+          fallback: 'xingzhe upload failed',
+        ),
+      );
+    }
+
+    if (payload['code'] != 0) {
+      throw XingzhePermanentError(
+        _sanitizeDetail(payload['msg'], fallback: 'xingzhe upload failed'),
+      );
+    }
+
+    // 行者上传成功后返回 workout_id，即真实活动 ID
+    final data = payload['data'] as Map<String, dynamic>?;
+    final workoutIdRaw = data?['workout_id'] ?? data?['id'];
+    if (workoutIdRaw == null) {
+      return const XingzheUploadFitResult(uploadId: 0);
+    }
+    final int workoutId = workoutIdRaw is int
+        ? workoutIdRaw
+        : int.tryParse('$workoutIdRaw') ?? 0;
+    return XingzheUploadFitResult(
+      uploadId: workoutId,
+      remoteActivityId: workoutId > 0 ? workoutId : null,
+    );
   }
 
   Future<Map<String, dynamic>> pollUpload(
@@ -420,6 +555,15 @@ WpJmn7JfXB4HTMWjPVoyRZmSYjW4L8GrWmh51Qj7DwpTADadF3aq04o+s1b8LXJa
             final latest = items.first as Map<String, dynamic>;
             final id = latest['id'] ?? latest['workout_id'];
             return {'status': 'complete', 'activity_id': id};
+          }
+        }
+      } on DioException catch (e) {
+        // 兜底查询撞到会话失效时也顺手刷新一次，让后续尝试恢复正常。
+        if (_isSessionExpiredStatus(e.response?.statusCode)) {
+          try {
+            await _reauthenticateSession();
+          } on Exception {
+            // 兜底查询不保证成功，刷新失败就算了。
           }
         }
       } catch (_) {
