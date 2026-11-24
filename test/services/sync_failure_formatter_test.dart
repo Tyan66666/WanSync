@@ -75,6 +75,57 @@ void main() {
       expect(result, contains('上传失败（ride (1).fit）'));
       expect(result, contains('Strava 服务暂时不可用'));
     });
+
+    test('returns platform-aware message for 行者 auth failures', () {
+      const String raw =
+          '行者 上传失败 (demo.fit): XingzhePermanentError: 行者登录已失效(401)，自动重新登录后仍被拒绝';
+
+      final String result = SyncFailureFormatter.toUserMessage(raw);
+
+      expect(result, contains('行者 上传失败（demo.fit）'));
+      expect(result, contains('行者登录已失效'));
+      expect(result, contains('设置 → 行者'));
+      expect(result, isNot(contains('Strava')));
+    });
+
+    test('returns platform-aware message for 行者 5xx failures', () {
+      const String raw =
+          '行者 上传失败 (demo.fit): XingzheRetriableError: xingzhe upload 5xx: 502';
+
+      final String result = SyncFailureFormatter.toUserMessage(raw);
+
+      expect(result, contains('行者服务暂时不可用'));
+    });
+
+    test('returns generic 行者 message for other upload failures', () {
+      const String raw =
+          '行者 上传失败 (demo.fit): XingzhePermanentError: xingzhe upload failed: HTTP 400: invalid fit';
+
+      final String result = SyncFailureFormatter.toUserMessage(raw);
+
+      expect(result, contains('行者上传失败'));
+      expect(result, isNot(contains('重新登录')));
+    });
+
+    test('detects platform-prefixed Strava auth failures', () {
+      const String raw =
+          'Strava 上传失败 (demo.fit): StravaPermanentError: HTTP 403';
+
+      final String result = SyncFailureFormatter.toUserMessage(raw);
+
+      expect(result, contains('Strava 上传失败（demo.fit）'));
+      expect(result, contains('Strava 授权可能已失效'));
+    });
+
+    test('detects platform-prefixed Intervals.icu failures', () {
+      const String raw =
+          'Intervals.icu 上传失败 (demo.fit): IntervalsIcuError: HTTP 401';
+
+      final String result = SyncFailureFormatter.toUserMessage(raw);
+
+      expect(result, contains('Intervals.icu 上传失败（demo.fit）'));
+      expect(result, contains('API Key 可能已失效'));
+    });
   });
 
   group('SyncFailureFormatter.buildClipboardText', () {
